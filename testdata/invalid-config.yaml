@@ -1,0 +1,5 @@
+state_db: /var/lib/sre-rca/state.db
+aliyun:
+  profile: sre-ecs-role
+worker:
+  max_turns: 8

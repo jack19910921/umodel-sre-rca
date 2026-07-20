@@ -1,0 +1,14 @@
+listen_addr: 127.0.0.1:8080
+callback_token: replace-with-a-random-callback-token
+state_db: /var/lib/sre-rca/state.db
+aliyun:
+  profile: sre-ecs-role
+  workspace: default-cms-your-account-cn-hangzhou
+  region: cn-hangzhou
+feishu:
+  app_id: ${FEISHU_APP_ID}
+  app_secret: ${FEISHU_APP_SECRET}
+  chat_id: ${FEISHU_CHAT_ID}
+worker:
+  max_turns: 8
+  timeout_seconds: 300
