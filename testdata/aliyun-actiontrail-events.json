@@ -1,0 +1,13 @@
+{
+  "RequestId": "req-demo",
+  "Events": [
+    {
+      "eventId": "evt-demo",
+      "eventName": "RevokeSecurityGroup",
+      "eventTime": "2026-07-21T12:00:00Z",
+      "serviceName": "Ecs",
+      "requestId": "request-demo",
+      "userIdentity": {"userName": "demo-operator"}
+    }
+  ]
+}
