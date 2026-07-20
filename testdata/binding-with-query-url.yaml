@@ -1,0 +1,9 @@
+bindings:
+  - id: prohibited_url_binding
+    evidence_class: logs
+    target: sre.service_endpoint
+    provider: aliyun.sls
+    query_template: nginx_access_by_window_v1
+    query_url: https://example.invalid/query?q=${instance_id}
+    selector_mapping:
+      endpoint_id: endpoint_id
