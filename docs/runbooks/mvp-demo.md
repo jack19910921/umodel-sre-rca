@@ -104,3 +104,19 @@ TCP/22 and do not stop the ECS, Nginx, or the gateway. Restore the same TCP/80
 rule immediately after the alert test. The gateway is not enabled until its
 callback fixture, ECS RAM role, Feishu app credentials, and read-only provider
 checks have all passed.
+
+## 5. Deploy the local gateway only after its prerequisites pass
+
+1. Build the two binaries in CI or on the ECS, then install them under
+   `/opt/sre-rca/bin/`. Create the unprivileged `sre-rca` service user and the
+   writable directory `/var/lib/sre-rca`.
+2. Copy `configs/sre.example.yaml` to `/etc/sre-rca/sre.yaml`; replace every
+   placeholder. Put app secrets only in `/etc/sre-rca/sre.env` with mode `0600`.
+   The `sre-rca` user must own the non-interactive Claude Code authentication;
+   do not rely on a personal interactive login session.
+3. Install `deploy/sre-gateway.service`, then run `systemctl daemon-reload` and
+   `systemctl enable --now sre-gateway`.
+4. Configure TLS and the single callback path with
+   `deploy/nginx/sre-rca.conf`, verify `nginx -t`, then reload Nginx.
+5. Run `scripts/verify-mvp.sh`. A success here verifies only prerequisites; it
+   is not a substitute for the CloudMonitor callback fixture or live exercise.

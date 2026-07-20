@@ -1,0 +1,23 @@
+[Unit]
+Description=Customer-hosted SRE RCA Gateway
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=sre-rca
+Group=sre-rca
+WorkingDirectory=/opt/sre-rca/runtime
+EnvironmentFile=/etc/sre-rca/sre.env
+ExecStart=/opt/sre-rca/bin/sre-gateway -config /etc/sre-rca/sre.yaml
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=20
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/sre-rca
+
+[Install]
+WantedBy=multi-user.target

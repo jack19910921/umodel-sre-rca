@@ -20,7 +20,12 @@ type Repository interface {
 	IncidentByID(context.Context, string) (domain.Incident, error)
 	Enqueue(context.Context, string, time.Time) error
 	ClaimNext(context.Context, string, time.Time) (domain.Job, bool, error)
+	MarkInvestigating(context.Context, string, time.Time) error
+	SetFeishuMessageID(context.Context, string, string, time.Time) error
+	StoreEvidence(context.Context, string, []domain.Evidence, time.Time) error
+	OpenEvidence(context.Context, string) (domain.Evidence, error)
 	Complete(context.Context, string, domain.RCAResult, time.Time) error
+	Fail(context.Context, string, time.Time) error
 	ScheduleAuditRetry(context.Context, string, time.Time) error
 	MarkRecovered(context.Context, string, time.Time) error
 }
@@ -48,6 +53,7 @@ func (r *SQLiteRepository) migrate(ctx context.Context) error {
 		`CREATE TABLE IF NOT EXISTS jobs (id TEXT PRIMARY KEY, incident_id TEXT NOT NULL, status TEXT NOT NULL, worker_id TEXT NOT NULL DEFAULT '', attempt INTEGER NOT NULL DEFAULT 0, run_after INTEGER NOT NULL)`,
 		`CREATE INDEX IF NOT EXISTS jobs_claimable ON jobs(status, run_after)`,
 		`CREATE TABLE IF NOT EXISTS evidence_snapshots (id TEXT PRIMARY KEY, incident_id TEXT NOT NULL, evidence_json TEXT NOT NULL, created_at INTEGER NOT NULL)`,
+		`CREATE TABLE IF NOT EXISTS evidence_records (id TEXT PRIMARY KEY, incident_id TEXT NOT NULL, evidence_json TEXT NOT NULL, created_at INTEGER NOT NULL)`,
 	}
 	for _, statement := range statements {
 		if _, err := r.db.ExecContext(ctx, statement); err != nil {
@@ -85,6 +91,58 @@ func (r *SQLiteRepository) IncidentByID(ctx context.Context, id string) (domain.
 	return in, nil
 }
 
+func (r *SQLiteRepository) MarkInvestigating(ctx context.Context, incidentID string, at time.Time) error {
+	result, err := r.db.ExecContext(ctx, `UPDATE incidents SET state = ?, updated_at = ? WHERE id = ? AND state IN ('RECEIVED','AWAITING_AUDIT_EVENT')`, domain.IncidentInvestigating, at.Unix(), incidentID)
+	if err != nil {
+		return err
+	}
+	return oneRow(result, "mark investigating", incidentID)
+}
+
+func (r *SQLiteRepository) SetFeishuMessageID(ctx context.Context, incidentID, messageID string, at time.Time) error {
+	if messageID == "" {
+		return fmt.Errorf("Feishu message id is required")
+	}
+	result, err := r.db.ExecContext(ctx, `UPDATE incidents SET feishu_message_id = ?, updated_at = ? WHERE id = ?`, messageID, at.Unix(), incidentID)
+	if err != nil {
+		return err
+	}
+	return oneRow(result, "set Feishu message id", incidentID)
+}
+
+func (r *SQLiteRepository) StoreEvidence(ctx context.Context, incidentID string, evidence []domain.Evidence, at time.Time) error {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, item := range evidence {
+		if item.ID == "" {
+			return fmt.Errorf("evidence id is required")
+		}
+		raw, err := json.Marshal(item)
+		if err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT OR REPLACE INTO evidence_records (id, incident_id, evidence_json, created_at) VALUES (?, ?, ?, ?)`, item.ID, incidentID, string(raw), at.Unix()); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+func (r *SQLiteRepository) OpenEvidence(ctx context.Context, evidenceID string) (domain.Evidence, error) {
+	var raw string
+	if err := r.db.QueryRowContext(ctx, `SELECT evidence_json FROM evidence_records WHERE id = ?`, evidenceID).Scan(&raw); err != nil {
+		return domain.Evidence{}, err
+	}
+	var item domain.Evidence
+	if err := json.Unmarshal([]byte(raw), &item); err != nil {
+		return domain.Evidence{}, fmt.Errorf("decode stored evidence: %w", err)
+	}
+	return item, nil
+}
+
 func (r *SQLiteRepository) Complete(ctx context.Context, incidentID string, result domain.RCAResult, at time.Time) error {
 	raw, err := json.Marshal(result)
 	if err != nil {
@@ -99,17 +157,21 @@ func (r *SQLiteRepository) Complete(ctx context.Context, incidentID string, resu
 	if err != nil {
 		return err
 	}
-	changed, err := updated.RowsAffected()
-	if err != nil {
+	if err := oneRow(updated, "complete incident", incidentID); err != nil {
 		return err
-	}
-	if changed != 1 {
-		return fmt.Errorf("complete incident %s: %w", incidentID, sql.ErrNoRows)
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO evidence_snapshots (id, incident_id, evidence_json, created_at) VALUES (?, ?, ?, ?)`, domainSnapshotID(), incidentID, string(raw), at.Unix()); err != nil {
 		return err
 	}
 	return tx.Commit()
+}
+
+func (r *SQLiteRepository) Fail(ctx context.Context, incidentID string, at time.Time) error {
+	result, err := r.db.ExecContext(ctx, `UPDATE incidents SET state = ?, updated_at = ? WHERE id = ? AND state IN ('RECEIVED','INVESTIGATING','AWAITING_AUDIT_EVENT')`, domain.IncidentFailed, at.Unix(), incidentID)
+	if err != nil {
+		return err
+	}
+	return oneRow(result, "fail incident", incidentID)
 }
 
 func (r *SQLiteRepository) ScheduleAuditRetry(ctx context.Context, incidentID string, retryAt time.Time) error {
@@ -122,12 +184,8 @@ func (r *SQLiteRepository) ScheduleAuditRetry(ctx context.Context, incidentID st
 	if err != nil {
 		return err
 	}
-	changed, err := updated.RowsAffected()
-	if err != nil {
+	if err := oneRow(updated, "schedule audit retry", incidentID); err != nil {
 		return err
-	}
-	if changed != 1 {
-		return fmt.Errorf("schedule audit retry for incident %s: %w", incidentID, sql.ErrNoRows)
 	}
 	job := domain.NewJob(incidentID, retryAt)
 	if _, err := tx.ExecContext(ctx, `INSERT INTO jobs (id, incident_id, status, run_after) VALUES (?, ?, ?, ?)`, job.ID, job.IncidentID, job.Status, job.RunAfter.Unix()); err != nil {
@@ -141,14 +199,7 @@ func (r *SQLiteRepository) MarkRecovered(ctx context.Context, incidentKey string
 	if err != nil {
 		return err
 	}
-	changed, err := result.RowsAffected()
-	if err != nil {
-		return err
-	}
-	if changed != 1 {
-		return fmt.Errorf("recover incident %s: %w", incidentKey, sql.ErrNoRows)
-	}
-	return nil
+	return oneRow(result, "recover incident", incidentKey)
 }
 
 func (r *SQLiteRepository) ClaimNext(ctx context.Context, workerID string, now time.Time) (domain.Job, bool, error) {
@@ -197,4 +248,15 @@ func domainSnapshotID() string {
 	// A snapshot is an immutable event. Reusing the same cryptographically-random
 	// ID shape as the domain records avoids user-controlled filenames or IDs.
 	return domain.NewJob("snapshot", time.Unix(0, 0)).ID
+}
+
+func oneRow(result sql.Result, operation, id string) error {
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if changed != 1 {
+		return fmt.Errorf("%s %s: %w", operation, id, sql.ErrNoRows)
+	}
+	return nil
 }
