@@ -49,3 +49,71 @@ func TestClaimNextClaimsQueuedJobOnce(t *testing.T) {
 		t.Fatalf("second claim ok=%v err=%v", ok, err)
 	}
 }
+
+func TestCompletePersistsResultAndClosesIncident(t *testing.T) {
+	repo := newTestRepo(t)
+	incident, _, err := repo.CreateOrGetIncident(context.Background(), domain.NewIncident("ws", "rule-1", "i-demo", time.Unix(100, 0)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := domain.RCAResult{
+		Summary:     "TCP/80 was removed from the security group",
+		Confidence:  0.9,
+		RootCause:   "security group change",
+		EvidenceIDs: []string{"change-1"},
+	}
+	if err := repo.Complete(context.Background(), incident.ID, result, time.Unix(110, 0)); err != nil {
+		t.Fatal(err)
+	}
+	got, err := repo.IncidentByID(context.Background(), incident.ID)
+	if err != nil || got.State != domain.IncidentCompleted {
+		t.Fatalf("incident=%#v err=%v", got, err)
+	}
+	if count := countEvidenceSnapshots(t, repo, incident.ID); count != 1 {
+		t.Fatalf("snapshots=%d, want 1", count)
+	}
+}
+
+func TestScheduleAuditRetryMarksIncidentAndQueuesJob(t *testing.T) {
+	repo := newTestRepo(t)
+	incident, _, err := repo.CreateOrGetIncident(context.Background(), domain.NewIncident("ws", "rule-1", "i-demo", time.Unix(100, 0)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	retryAt := time.Unix(220, 0)
+	if err := repo.ScheduleAuditRetry(context.Background(), incident.ID, retryAt); err != nil {
+		t.Fatal(err)
+	}
+	got, err := repo.IncidentByID(context.Background(), incident.ID)
+	if err != nil || got.State != domain.IncidentAwaitingAuditEvent {
+		t.Fatalf("incident=%#v err=%v", got, err)
+	}
+	job, ok, err := repo.ClaimNext(context.Background(), "worker-a", retryAt)
+	if err != nil || !ok || job.IncidentID != incident.ID {
+		t.Fatalf("job=%#v ok=%v err=%v", job, ok, err)
+	}
+}
+
+func TestMarkRecoveredClosesActiveIncident(t *testing.T) {
+	repo := newTestRepo(t)
+	incident, _, err := repo.CreateOrGetIncident(context.Background(), domain.NewIncident("ws", "rule-1", "i-demo", time.Unix(100, 0)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.MarkRecovered(context.Background(), incident.Key, time.Unix(120, 0)); err != nil {
+		t.Fatal(err)
+	}
+	got, err := repo.IncidentByID(context.Background(), incident.ID)
+	if err != nil || got.State != domain.IncidentRecovered {
+		t.Fatalf("incident=%#v err=%v", got, err)
+	}
+}
+
+func countEvidenceSnapshots(t *testing.T, repo *SQLiteRepository, incidentID string) int {
+	t.Helper()
+	var count int
+	if err := repo.db.QueryRow(`SELECT COUNT(*) FROM evidence_snapshots WHERE incident_id = ?`, incidentID).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	return count
+}

@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -11,6 +12,18 @@ import (
 )
 
 type SQLiteRepository struct{ db *sql.DB }
+
+// Repository is the persistence boundary used by inbound handlers and workers.
+// It deliberately exposes domain operations instead of raw SQL state updates.
+type Repository interface {
+	CreateOrGetIncident(context.Context, domain.Incident) (domain.Incident, bool, error)
+	IncidentByID(context.Context, string) (domain.Incident, error)
+	Enqueue(context.Context, string, time.Time) error
+	ClaimNext(context.Context, string, time.Time) (domain.Job, bool, error)
+	Complete(context.Context, string, domain.RCAResult, time.Time) error
+	ScheduleAuditRetry(context.Context, string, time.Time) error
+	MarkRecovered(context.Context, string, time.Time) error
+}
 
 func Open(path string) (*SQLiteRepository, error) {
 	db, err := sql.Open("sqlite", path)
@@ -63,6 +76,81 @@ func (r *SQLiteRepository) Enqueue(ctx context.Context, incidentID string, runAf
 	return err
 }
 
+func (r *SQLiteRepository) IncidentByID(ctx context.Context, id string) (domain.Incident, error) {
+	row := r.db.QueryRowContext(ctx, `SELECT id, incident_key, workspace, rule_id, resource_id, state, feishu_message_id, alert_at, created_at, updated_at FROM incidents WHERE id = ?`, id)
+	in, err := scanIncident(row)
+	if err != nil {
+		return domain.Incident{}, err
+	}
+	return in, nil
+}
+
+func (r *SQLiteRepository) Complete(ctx context.Context, incidentID string, result domain.RCAResult, at time.Time) error {
+	raw, err := json.Marshal(result)
+	if err != nil {
+		return fmt.Errorf("marshal RCA result: %w", err)
+	}
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	updated, err := tx.ExecContext(ctx, `UPDATE incidents SET state = ?, updated_at = ? WHERE id = ? AND state IN ('RECEIVED','INVESTIGATING','AWAITING_AUDIT_EVENT')`, domain.IncidentCompleted, at.Unix(), incidentID)
+	if err != nil {
+		return err
+	}
+	changed, err := updated.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if changed != 1 {
+		return fmt.Errorf("complete incident %s: %w", incidentID, sql.ErrNoRows)
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO evidence_snapshots (id, incident_id, evidence_json, created_at) VALUES (?, ?, ?, ?)`, domainSnapshotID(), incidentID, string(raw), at.Unix()); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (r *SQLiteRepository) ScheduleAuditRetry(ctx context.Context, incidentID string, retryAt time.Time) error {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	updated, err := tx.ExecContext(ctx, `UPDATE incidents SET state = ?, updated_at = ? WHERE id = ? AND state IN ('RECEIVED','INVESTIGATING','AWAIT_AUDIT_EVENT','AWAITING_AUDIT_EVENT')`, domain.IncidentAwaitingAuditEvent, retryAt.Unix(), incidentID)
+	if err != nil {
+		return err
+	}
+	changed, err := updated.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if changed != 1 {
+		return fmt.Errorf("schedule audit retry for incident %s: %w", incidentID, sql.ErrNoRows)
+	}
+	job := domain.NewJob(incidentID, retryAt)
+	if _, err := tx.ExecContext(ctx, `INSERT INTO jobs (id, incident_id, status, run_after) VALUES (?, ?, ?, ?)`, job.ID, job.IncidentID, job.Status, job.RunAfter.Unix()); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (r *SQLiteRepository) MarkRecovered(ctx context.Context, incidentKey string, at time.Time) error {
+	result, err := r.db.ExecContext(ctx, `UPDATE incidents SET state = ?, updated_at = ? WHERE incident_key = ? AND state IN ('RECEIVED','INVESTIGATING','AWAITING_AUDIT_EVENT')`, domain.IncidentRecovered, at.Unix(), incidentKey)
+	if err != nil {
+		return err
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if changed != 1 {
+		return fmt.Errorf("recover incident %s: %w", incidentKey, sql.ErrNoRows)
+	}
+	return nil
+}
+
 func (r *SQLiteRepository) ClaimNext(ctx context.Context, workerID string, now time.Time) (domain.Job, bool, error) {
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -103,4 +191,10 @@ func scanJob(row interface{ Scan(...any) error }) (domain.Job, error) {
 	err := row.Scan(&job.ID, &job.IncidentID, &job.Status, &job.WorkerID, &job.Attempt, &runAfter)
 	job.RunAfter = time.Unix(runAfter, 0).UTC()
 	return job, err
+}
+
+func domainSnapshotID() string {
+	// A snapshot is an immutable event. Reusing the same cryptographically-random
+	// ID shape as the domain records avoids user-controlled filenames or IDs.
+	return domain.NewJob("snapshot", time.Unix(0, 0)).ID
 }
