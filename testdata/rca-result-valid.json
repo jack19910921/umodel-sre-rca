@@ -1,0 +1,8 @@
+{
+  "summary": "TCP/80 was removed from the security group",
+  "confidence": 0.93,
+  "root_cause": "security group rule revoked",
+  "evidence_ids": ["ev-probe", "ev-change"],
+  "next_actions": ["restore TCP/80"],
+  "pending_audit": false
+}
