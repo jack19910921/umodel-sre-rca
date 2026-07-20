@@ -1,0 +1,17 @@
+# This is the reviewed source-of-truth manifest for the customer workspace.
+# Apply the resources in the other files with umctl/SDK or through UModel
+# Explorer; a UModel domain is represented by the `metadata.domain` on each
+# resource rather than by an independently persisted domain object.
+domain:
+  name: sre
+  display_name:
+    en_us: SRE business semantics
+    zh_cn: SRE 业务语义
+  description:
+    en_us: Customer-owned service, endpoint, availability, log, and change semantics for RCA.
+    zh_cn: 面向根因定位的客户自有服务、端点、可用性、日志和变更语义。
+  owner: sre-platform
+  guardrails:
+    - Do not duplicate acs.ecs.instance, security group, VPC, or their native relationships.
+    - Use EntitySetLink for topology and DataLink/StorageLink for data semantics.
+    - Keep raw metrics, logs, and audit events in the customer cloud account.

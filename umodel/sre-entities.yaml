@@ -1,0 +1,58 @@
+---
+kind: entity_set
+schema:
+  url: umodel.aliyun.com
+  version: v0.1.0
+metadata:
+  name: sre.service
+  domain: sre
+  display_name:
+    en_us: SRE Service
+    zh_cn: SRE 服务
+  description:
+    en_us: A business service owned and operated by a customer team.
+    zh_cn: 由客户团队负责的业务服务。
+spec:
+  primary_key_fields: [service_id]
+  name_fields: [name, service_id]
+  time_field: observed_at
+  keep_alive_seconds: 172800
+  fields:
+    - {name: service_id, type: string, required: true}
+    - {name: name, type: string, required: true}
+    - {name: owner, type: string}
+    - {name: environment, type: string}
+    - {name: criticality, type: string}
+    - {name: rto_minutes, type: int}
+    - {name: observed_at, type: long, required: true}
+---
+kind: entity_set
+schema:
+  url: umodel.aliyun.com
+  version: v0.1.0
+metadata:
+  name: sre.service_endpoint
+  domain: sre
+  display_name:
+    en_us: Service Endpoint
+    zh_cn: 服务端点
+  description:
+    en_us: A customer-visible endpoint monitored for availability and anchored to an existing cloud resource.
+    zh_cn: 面向客户的可用性监控端点，并关联到已有云资源。
+spec:
+  primary_key_fields: [endpoint_id]
+  name_fields: [url, endpoint_id]
+  time_field: observed_at
+  keep_alive_seconds: 172800
+  fields:
+    - {name: service_id, type: string, required: true}
+    - {name: endpoint_id, type: string, required: true}
+    - {name: url, type: string, required: true}
+    - {name: protocol, type: string, required: true}
+    - {name: expected_status, type: int, required: true}
+    - {name: host, type: string, required: true}
+    - {name: probe_task_id, type: string, required: true}
+    - {name: account_id, type: string, required: true}
+    - {name: region_id, type: string, required: true}
+    - {name: instance_id, type: string, required: true}
+    - {name: observed_at, type: long, required: true}

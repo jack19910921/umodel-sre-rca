@@ -1,0 +1,36 @@
+---
+kind: sls_logstore
+schema: {url: umodel.aliyun.com, version: v0.1.0}
+metadata:
+  name: sre.storage.sls.nginx_demo
+  domain: sre
+  display_name: {en_us: SLS Nginx Demo Logstore, zh_cn: SLS Nginx 演示 Logstore}
+  description: {en_us: Replace project and logstore placeholders with the customer-owned SLS destination., zh_cn: 请将 project 和 logstore 占位符替换为客户自有 SLS 目标。}
+spec:
+  project: ${SLS_PROJECT}
+  logstore: sre-nginx-demo
+  region_id: ${REGION_ID}
+---
+kind: storage_link
+schema: {url: umodel.aliyun.com, version: v0.1.0}
+metadata:
+  name: sre.log.nginx_access_storage_link
+  domain: sre
+  display_name: {en_us: Nginx Access Log Storage Link, zh_cn: Nginx 访问日志存储关联}
+  description: {en_us: Maps the logical access-log fields to the customer SLS logstore., zh_cn: 将逻辑访问日志字段映射至客户 SLS Logstore。}
+spec:
+  src: {domain: sre, kind: log_set, name: sre.log.nginx_access}
+  dest: {domain: sre, kind: sls_logstore, name: sre.storage.sls.nginx_demo}
+  fields_mapping: {endpoint_id: endpoint_id, instance_id: instance_id, host: host, request_uri: request_uri, status: status, request_time: request_time, time: __time__}
+---
+kind: storage_link
+schema: {url: umodel.aliyun.com, version: v0.1.0}
+metadata:
+  name: sre.log.nginx_error_storage_link
+  domain: sre
+  display_name: {en_us: Nginx Error Log Storage Link, zh_cn: Nginx 错误日志存储关联}
+  description: {en_us: Maps the logical error-log fields to the customer SLS logstore., zh_cn: 将逻辑错误日志字段映射至客户 SLS Logstore。}
+spec:
+  src: {domain: sre, kind: log_set, name: sre.log.nginx_error}
+  dest: {domain: sre, kind: sls_logstore, name: sre.storage.sls.nginx_demo}
+  fields_mapping: {endpoint_id: endpoint_id, instance_id: instance_id, host: host, level: level, message: message, time: __time__}

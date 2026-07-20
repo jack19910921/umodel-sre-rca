@@ -1,0 +1,78 @@
+---
+kind: entity_set_link
+schema: {url: umodel.aliyun.com, version: v0.1.0}
+metadata:
+  name: sre.service_serves_sre.service_endpoint
+  domain: sre
+  display_name: {en_us: Service Serves Endpoint, zh_cn: 服务提供端点}
+  description: {en_us: A business service serves one or more monitored endpoints., zh_cn: 一个业务服务提供一个或多个被监控端点。}
+spec:
+  src: {domain: sre, kind: entity_set, name: sre.service}
+  dest: {domain: sre, kind: entity_set, name: sre.service_endpoint}
+  entity_link_type: serves
+  fields_mapping: {service_id: service_id}
+---
+kind: entity_set_link
+schema: {url: umodel.aliyun.com, version: v0.1.0}
+metadata:
+  name: sre.service_endpoint_hosted_by_acs.ecs.instance
+  domain: sre
+  display_name: {en_us: Endpoint Hosted by ECS Instance, zh_cn: 端点部署在 ECS 实例}
+  description: {en_us: A monitored endpoint is hosted by an existing acs ECS instance., zh_cn: 被监控端点部署在已有的 acs ECS 实例上。}
+spec:
+  src: {domain: sre, kind: entity_set, name: sre.service_endpoint}
+  dest: {domain: acs, kind: entity_set, name: acs.ecs.instance}
+  entity_link_type: hosted_by
+  fields_mapping: {account_id: account_id, region_id: region_id, instance_id: instance_id}
+---
+kind: data_link
+schema: {url: umodel.aliyun.com, version: v0.1.0}
+metadata:
+  name: sre.service_endpoint_related_to_sre.event.availability
+  domain: sre
+  display_name: {en_us: Endpoint Availability Events, zh_cn: 端点可用性事件}
+  description: {en_us: Correlates an endpoint with its HTTP probe results., zh_cn: 将端点与其 HTTP 拨测结果关联。}
+spec:
+  src: {domain: sre, kind: entity_set, name: sre.service_endpoint}
+  dest: {domain: sre, kind: event_set, name: sre.event.availability}
+  data_link_type: related_to
+  fields_mapping: {endpoint_id: endpoint_id, probe_task_id: probe_task_id}
+---
+kind: data_link
+schema: {url: umodel.aliyun.com, version: v0.1.0}
+metadata:
+  name: sre.service_endpoint_related_to_sre.log.nginx_access
+  domain: sre
+  display_name: {en_us: Endpoint Nginx Access Logs, zh_cn: 端点 Nginx 访问日志}
+  description: {en_us: Correlates an endpoint to customer-owned Nginx access logs., zh_cn: 将端点关联到客户自有 Nginx 访问日志。}
+spec:
+  src: {domain: sre, kind: entity_set, name: sre.service_endpoint}
+  dest: {domain: sre, kind: log_set, name: sre.log.nginx_access}
+  data_link_type: related_to
+  fields_mapping: {endpoint_id: endpoint_id}
+---
+kind: data_link
+schema: {url: umodel.aliyun.com, version: v0.1.0}
+metadata:
+  name: sre.service_endpoint_related_to_sre.log.nginx_error
+  domain: sre
+  display_name: {en_us: Endpoint Nginx Error Logs, zh_cn: 端点 Nginx 错误日志}
+  description: {en_us: Correlates an endpoint to customer-owned Nginx error logs., zh_cn: 将端点关联到客户自有 Nginx 错误日志。}
+spec:
+  src: {domain: sre, kind: entity_set, name: sre.service_endpoint}
+  dest: {domain: sre, kind: log_set, name: sre.log.nginx_error}
+  data_link_type: related_to
+  fields_mapping: {endpoint_id: endpoint_id}
+---
+kind: data_link
+schema: {url: umodel.aliyun.com, version: v0.1.0}
+metadata:
+  name: acs.ecs.securitygroup_related_to_sre.event.change
+  domain: sre
+  display_name: {en_us: Security Group Change Events, zh_cn: 安全组变更事件}
+  description: {en_us: Correlates a native security group with ActionTrail change evidence., zh_cn: 将原生安全组与 ActionTrail 变更证据关联。}
+spec:
+  src: {domain: acs, kind: entity_set, name: acs.ecs.securitygroup}
+  dest: {domain: sre, kind: event_set, name: sre.event.change}
+  data_link_type: related_to
+  fields_mapping: {account_id: account_id, region_id: region_id, resource_id: resource_id}

@@ -1,0 +1,80 @@
+---
+kind: event_set
+schema:
+  url: umodel.aliyun.com
+  version: v0.1.0
+metadata:
+  name: sre.event.availability
+  domain: sre
+  display_name: {en_us: Availability Event, zh_cn: 可用性事件}
+  description: {en_us: Result emitted by the configured HTTP probe., zh_cn: 由配置的 HTTP 拨测产生的结果。}
+spec:
+  time_field: observed_at
+  fields:
+    - {name: endpoint_id, type: string, required: true}
+    - {name: probe_task_id, type: string, required: true}
+    - {name: probe_result, type: string, required: true}
+    - {name: status_code, type: int}
+    - {name: latency_ms, type: double}
+    - {name: observed_at, type: long, required: true}
+---
+kind: log_set
+schema:
+  url: umodel.aliyun.com
+  version: v0.1.0
+metadata:
+  name: sre.log.nginx_access
+  domain: sre
+  display_name: {en_us: Nginx Access Log, zh_cn: Nginx 访问日志}
+  description: {en_us: Structured Nginx access records retained in customer SLS., zh_cn: 存放在客户 SLS 中的结构化 Nginx 访问记录。}
+spec:
+  time_field: time
+  fields:
+    - {name: endpoint_id, type: string, required: true}
+    - {name: instance_id, type: string, required: true}
+    - {name: host, type: string, required: true}
+    - {name: request_uri, type: string}
+    - {name: status, type: int}
+    - {name: request_time, type: double}
+    - {name: time, type: long, required: true}
+---
+kind: log_set
+schema:
+  url: umodel.aliyun.com
+  version: v0.1.0
+metadata:
+  name: sre.log.nginx_error
+  domain: sre
+  display_name: {en_us: Nginx Error Log, zh_cn: Nginx 错误日志}
+  description: {en_us: Structured Nginx error records retained in customer SLS., zh_cn: 存放在客户 SLS 中的结构化 Nginx 错误记录。}
+spec:
+  time_field: time
+  fields:
+    - {name: endpoint_id, type: string, required: true}
+    - {name: instance_id, type: string, required: true}
+    - {name: host, type: string, required: true}
+    - {name: level, type: string}
+    - {name: message, type: string}
+    - {name: time, type: long, required: true}
+---
+kind: event_set
+schema:
+  url: umodel.aliyun.com
+  version: v0.1.0
+metadata:
+  name: sre.event.change
+  domain: sre
+  display_name: {en_us: Resource Change Event, zh_cn: 资源变更事件}
+  description: {en_us: Read-only ActionTrail projection for RCA correlation., zh_cn: 供根因定位关联的只读 ActionTrail 投影。}
+spec:
+  time_field: event_time
+  fields:
+    - {name: account_id, type: string, required: true}
+    - {name: region_id, type: string, required: true}
+    - {name: resource_id, type: string, required: true}
+    - {name: resource_type, type: string, required: true}
+    - {name: event_name, type: string, required: true}
+    - {name: operator, type: string}
+    - {name: event_time, type: long, required: true}
+    - {name: request_id, type: string}
+    - {name: change_summary, type: string}
