@@ -8,10 +8,11 @@ import (
 )
 
 type Config struct {
-	ListenAddr    string `yaml:"listen_addr"`
-	CallbackToken string `yaml:"callback_token"`
-	StateDB       string `yaml:"state_db"`
-	Aliyun        struct {
+	ListenAddr         string `yaml:"listen_addr"`
+	CallbackToken      string `yaml:"callback_token"`
+	CallbackCaptureDir string `yaml:"callback_capture_dir"`
+	StateDB            string `yaml:"state_db"`
+	Aliyun             struct {
 		Profile   string `yaml:"profile"`
 		Workspace string `yaml:"workspace"`
 		Region    string `yaml:"region"`
