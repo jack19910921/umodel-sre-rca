@@ -11,6 +11,20 @@ Usage:
 EOF
 }
 
+wait_for_gateway() {
+  local address="$1"
+  local attempt
+
+  for attempt in $(seq 1 20); do
+    if curl --fail --silent --show-error --max-time 1 "http://${address}" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 0.25
+  done
+
+  curl --fail --silent --show-error --max-time 1 "http://${address}" >/dev/null
+}
+
 if [[ "${EUID}" -ne 0 ]]; then
   echo "run as root" >&2
   exit 2
@@ -73,7 +87,7 @@ chmod 0600 /etc/sre-rca/sre.env
 install -m 0644 "$bundle_dir/systemd/sre-gateway.service" /etc/systemd/system/sre-gateway.service
 systemctl daemon-reload
 systemctl enable --now sre-gateway
-curl --fail --silent --show-error --max-time 5 http://127.0.0.1:8080/healthz >/dev/null
+wait_for_gateway 127.0.0.1:8080/healthz
 
 cat > /etc/nginx/sites-available/sre-rca-capture <<EOF
 server {
