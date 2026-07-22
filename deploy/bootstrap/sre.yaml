@@ -1,0 +1,11 @@
+listen_addr: 127.0.0.1:8080
+callback_token: ${SRE_RCA_CALLBACK_TOKEN}
+callback_capture_dir: /var/lib/sre-rca/callback-fixtures
+state_db: /var/lib/sre-rca/state.db
+aliyun:
+  profile: sre-ecs-role
+  workspace: capture-pending
+  region: cn-hangzhou
+worker:
+  max_turns: 8
+  timeout_seconds: 300
