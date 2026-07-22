@@ -7,6 +7,7 @@ import (
 
 	"github.com/jack/umodel-sre-rca/internal/config"
 	"github.com/jack/umodel-sre-rca/internal/httpapi"
+	"github.com/jack/umodel-sre-rca/internal/store"
 )
 
 func main() {
@@ -16,6 +17,11 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	repo, err := store.Open(cfg.StateDB)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer repo.Close()
 	log.Printf("sre-gateway listening on %s", cfg.ListenAddr)
-	log.Fatal(http.ListenAndServe(cfg.ListenAddr, httpapi.NewGateway(cfg.CallbackToken, cfg.CallbackCaptureDir)))
+	log.Fatal(http.ListenAndServe(cfg.ListenAddr, httpapi.NewGateway(cfg.CallbackToken, cfg.CallbackCaptureDir, repo)))
 }

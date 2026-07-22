@@ -1,7 +1,7 @@
 listen_addr: 127.0.0.1:8080
 callback_token: replace-with-a-random-callback-token
-# Enable only during the one-time callback-shape capture. Files are redacted
-# and written mode 0600; remove this setting after alert/recovery parsing works.
+# Optional contract capture. Files are redacted and written mode 0600. Keep it
+# during staged rollout, then remove it after callback monitoring is stable.
 callback_capture_dir: /var/lib/sre-rca/callback-fixtures
 state_db: /var/lib/sre-rca/state.db
 aliyun:

@@ -116,7 +116,7 @@ checks have all passed.
    do not rely on a personal interactive login session.
 3. Install `deploy/sre-gateway.service`, then run `systemctl daemon-reload` and
    `systemctl enable --now sre-gateway`.
-4. Configure TLS and the single callback path with
+4. Configure TLS and the health plus CloudMonitor callback paths with
    `deploy/nginx/sre-rca.conf`, verify `nginx -t`, then reload Nginx.
 5. Run `scripts/verify-mvp.sh`. A success here verifies only prerequisites; it
    is not a substitute for the CloudMonitor callback fixture or live exercise.
@@ -136,8 +136,10 @@ retains every JSON key but replaces values under sensitive keys such as
 `secret`, `token`, `access_key`, `authorization`, and `cookie`, then writes the
 fixture with mode `0600` under `/var/lib/sre-rca/callback-fixtures/`.
 
-Copy the two fixture files back into `testdata/` without altering their key
-names. Then remove `callback_capture_dir` from `/etc/sre-rca/sre.yaml`, restart
-the gateway, and implement the normal parser against these exact samples. The
-normal `/v1/inbound/cloudmonitor` route deliberately remains unavailable until
-this review is complete.
+Do not commit customer fixture files: they can contain account and resource
+identifiers even after secret redaction. Instead, derive synthetic tests from
+the observed key structure. The normal `/v1/inbound/cloudmonitor` route accepts
+only `ALERT` events with `OCCURRED` or `RECOVERED` status, creates one
+idempotent incident job for an occurrence, and closes the matching active
+incident on recovery. Keep the capture route enabled during staged rollout and
+disable it only after observing normal ingestion in the customer environment.
