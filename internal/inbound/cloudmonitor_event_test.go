@@ -51,6 +51,20 @@ func TestParseCloudMonitorRecoveredEvent(t *testing.T) {
 	}
 }
 
+func TestParseCloudMonitorEventAcceptsCloudMonitorOffsetWithoutColon(t *testing.T) {
+	event, err := ParseCloudMonitorEvent([]byte(`{
+		"type":"ALERT", "status":"OCCURRED", "workspace":"ws", "ruleId":"rule-1",
+		"time":"2026-07-22T23:13:33+0800",
+		"resource":{"entity":{"entity_id":"i-demo"}}
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !event.Alert.EventAt.Equal(time.Date(2026, 7, 22, 15, 13, 33, 0, time.UTC)) {
+		t.Fatalf("event_at=%s", event.Alert.EventAt)
+	}
+}
+
 func TestParseCloudMonitorEventRejectsUnsupportedStatus(t *testing.T) {
 	_, err := ParseCloudMonitorEvent([]byte(`{
 		"type":"ALERT", "status":"UNKNOWN", "workspace":"ws", "ruleId":"rule-1",

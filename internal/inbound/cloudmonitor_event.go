@@ -75,11 +75,16 @@ func ParseCloudMonitorEvent(raw []byte) (CloudMonitorEvent, error) {
 
 func cloudMonitorEventTime(value string, timestamp int64) (time.Time, error) {
 	if value != "" {
-		parsed, err := time.Parse(time.RFC3339Nano, value)
-		if err != nil {
-			return time.Time{}, fmt.Errorf("parse CloudMonitor event time: %w", err)
+		for _, layout := range []string{
+			time.RFC3339Nano,
+			"2006-01-02T15:04:05-0700",
+		} {
+			parsed, err := time.Parse(layout, value)
+			if err == nil {
+				return parsed.UTC(), nil
+			}
 		}
-		return parsed.UTC(), nil
+		return time.Time{}, fmt.Errorf("parse CloudMonitor event time %q", value)
 	}
 	if timestamp > 0 {
 		return time.UnixMilli(timestamp).UTC(), nil
