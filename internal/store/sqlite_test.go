@@ -287,6 +287,41 @@ func TestRecoverClosesCompletedOrFailedIncidentWithoutChangingTerminalJob(t *tes
 	}
 }
 
+func TestRecoveryDuplicateReturnsLatestRecoveredGenerationWithoutChangingOlderTerminalGeneration(t *testing.T) {
+	repo := newTestRepo(t)
+	ctx := context.Background()
+	first, _, err := repo.CreateOrGetIncident(ctx, domain.NewIncident("ws", "rule-1", "i-demo", time.Unix(10, 0)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.Enqueue(ctx, first.ID, time.Unix(10, 0)); err != nil {
+		t.Fatal(err)
+	}
+	job, ok, err := repo.ClaimNext(ctx, "worker-a", time.Unix(11, 0))
+	if err != nil || !ok {
+		t.Fatalf("job=%#v ok=%v err=%v", job, ok, err)
+	}
+	if err := repo.CompleteJobAndIncident(ctx, job, first.ID, domain.RCAResult{Summary: "done"}, time.Unix(12, 0)); err != nil {
+		t.Fatal(err)
+	}
+	second, _, err := repo.CreateOrGetIncident(ctx, domain.NewIncident("ws", "rule-1", "i-demo", time.Unix(30, 0)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, recovered, err := repo.Recover(ctx, second.Key, time.Unix(40, 0)); err != nil || !recovered {
+		t.Fatalf("first recovery recovered=%v err=%v", recovered, err)
+	}
+
+	got, recovered, err := repo.Recover(ctx, second.Key, time.Unix(40, 0))
+	if err != nil || recovered || got.ID != second.ID || got.State != domain.IncidentRecovered {
+		t.Fatalf("duplicate got=%#v recovered=%v err=%v", got, recovered, err)
+	}
+	first, err = repo.IncidentByID(ctx, first.ID)
+	if err != nil || first.State != domain.IncidentCompleted {
+		t.Fatalf("first=%#v err=%v", first, err)
+	}
+}
+
 func countEvidenceSnapshots(t *testing.T, repo *SQLiteRepository, incidentID string) int {
 	t.Helper()
 	var count int

@@ -275,14 +275,66 @@ func TestCloudMonitorOldRecoveryDoesNotCloseNewerGeneration(t *testing.T) {
 			if err != nil || second.State != domain.IncidentReceived {
 				t.Fatalf("second=%#v err=%v", second, err)
 			}
-			if err := repo.Enqueue(context.Background(), second.ID, time.Unix(30, 0)); err != nil {
-				t.Fatal(err)
-			}
 			job, ok, err := repo.ClaimNext(context.Background(), "worker-b", time.Unix(31, 0))
 			if err != nil || !ok || job.IncidentID != second.ID {
 				t.Fatalf("job=%#v ok=%v err=%v", job, ok, err)
 			}
 		})
+	}
+}
+
+func TestCloudMonitorDuplicateRecoveryUpdatesLatestRecoveredGenerationOnly(t *testing.T) {
+	repo := newTestRepo(t)
+	notifier := &recordingRecoveryNotifier{}
+	srv := NewGatewayWithNotifier("test-token", "", repo, notifier)
+	first, _, err := repo.CreateOrGetIncident(context.Background(), domain.NewIncident("ws", "rule-1", "i-demo", time.Unix(10, 0)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.SetFeishuMessageID(context.Background(), first.ID, "om-first", time.Unix(11, 0)); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.Complete(context.Background(), first.ID, domain.RCAResult{Summary: "done"}, time.Unix(12, 0)); err != nil {
+		t.Fatal(err)
+	}
+	serve := func(status string, timestamp int64) *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		body := []byte(`{"type":"ALERT","status":"` + status + `","workspace":"ws","ruleId":"rule-1","timestamp":` + strconv.FormatInt(timestamp, 10) + `,"resource":{"entity":{"entity_id":"i-demo"}}}`)
+		srv.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/inbound/cloudmonitor?token=test-token", bytes.NewReader(body)))
+		return rec
+	}
+	rec := serve("OCCURRED", 30_000)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("occurred code=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var response struct {
+		IncidentID string `json:"incident_id"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil || response.IncidentID == "" {
+		t.Fatalf("occurred response=%s err=%v", rec.Body.String(), err)
+	}
+	second, err := repo.IncidentByID(context.Background(), response.IncidentID)
+	if err != nil || second.State != domain.IncidentReceived {
+		t.Fatalf("second=%#v err=%v", second, err)
+	}
+	if err := repo.SetFeishuMessageID(context.Background(), second.ID, "om-second", time.Unix(31, 0)); err != nil {
+		t.Fatal(err)
+	}
+	if rec := serve("RECOVERED", 40_000); rec.Code != http.StatusAccepted {
+		t.Fatalf("first recovery code=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if rec := serve("RECOVERED", 40_000); rec.Code != http.StatusAccepted {
+		t.Fatalf("duplicate recovery code=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if len(notifier.incidentIDs) != 2 || notifier.incidentIDs[0] != second.ID || notifier.incidentIDs[1] != second.ID {
+		t.Fatalf("updated incident IDs=%v want=%s", notifier.incidentIDs, second.ID)
+	}
+	first, err = repo.IncidentByID(context.Background(), first.ID)
+	if err != nil || first.State != domain.IncidentCompleted {
+		t.Fatalf("first=%#v err=%v", first, err)
+	}
+	if _, ok, err := repo.ClaimNext(context.Background(), "worker-a", time.Unix(41, 0)); err != nil || ok {
+		t.Fatalf("duplicate recovery left a runnable job: ok=%v err=%v", ok, err)
 	}
 }
 
@@ -318,6 +370,20 @@ func (f *fakeRecoveryNotifier) UpdateIncidentCard(_ context.Context, _ string, i
 type flakyRecoveryNotifier struct {
 	updates  int
 	failures int
+}
+
+type recordingRecoveryNotifier struct {
+	failures    int
+	incidentIDs []string
+}
+
+func (f *recordingRecoveryNotifier) UpdateIncidentCard(_ context.Context, _ string, incident domain.Incident, _ domain.RCAResult) error {
+	f.incidentIDs = append(f.incidentIDs, incident.ID)
+	if f.failures > 0 {
+		f.failures--
+		return errors.New("notifier unavailable")
+	}
+	return nil
 }
 
 func (f *flakyRecoveryNotifier) UpdateIncidentCard(context.Context, string, domain.Incident, domain.RCAResult) error {

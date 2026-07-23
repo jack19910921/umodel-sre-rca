@@ -295,13 +295,16 @@ func (r *SQLiteRepository) Recover(ctx context.Context, incidentKey string, at t
 		return domain.Incident{}, false, err
 	}
 	defer tx.Rollback()
-	row := tx.QueryRowContext(ctx, `SELECT id, incident_key, workspace, rule_id, resource_id, state, feishu_message_id, alert_at, created_at, updated_at FROM incidents WHERE incident_key = ? AND state IN ('RECEIVED','INVESTIGATING','AWAITING_AUDIT_EVENT','COMPLETED','FAILED') AND alert_at <= ? ORDER BY alert_at DESC, id DESC LIMIT 1`, incidentKey, at.Unix())
+	row := tx.QueryRowContext(ctx, `SELECT id, incident_key, workspace, rule_id, resource_id, state, feishu_message_id, alert_at, created_at, updated_at FROM incidents WHERE incident_key = ? AND state IN ('RECEIVED','INVESTIGATING','AWAITING_AUDIT_EVENT','COMPLETED','FAILED','RECOVERED') AND alert_at <= ? ORDER BY alert_at DESC, id DESC LIMIT 1`, incidentKey, at.Unix())
 	incident, err := scanIncident(row)
 	if err == sql.ErrNoRows {
 		return domain.Incident{}, false, tx.Commit()
 	}
 	if err != nil {
 		return domain.Incident{}, false, err
+	}
+	if incident.State == domain.IncidentRecovered {
+		return incident, false, tx.Commit()
 	}
 	updated, err := tx.ExecContext(ctx, `UPDATE incidents SET state = ?, updated_at = ? WHERE id = ? AND state IN ('RECEIVED','INVESTIGATING','AWAITING_AUDIT_EVENT','COMPLETED','FAILED')`, domain.IncidentRecovered, at.Unix(), incident.ID)
 	if err != nil {
