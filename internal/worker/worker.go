@@ -15,7 +15,7 @@ type Repository interface {
 	ClaimNext(context.Context, string, time.Time) (domain.Job, bool, error)
 	CheckActiveClaim(context.Context, domain.Job) error
 	IncidentByID(context.Context, string) (domain.Incident, error)
-	MarkInvestigating(context.Context, string, time.Time) error
+	MarkInvestigatingForClaim(context.Context, domain.Job, time.Time) error
 	SetFeishuMessageID(context.Context, string, string, time.Time) error
 	SetFeishuMessageIDForClaim(context.Context, domain.Job, string, time.Time) error
 	UpdateActiveClaimCard(context.Context, domain.Job, func(domain.Incident) error) error
@@ -97,7 +97,7 @@ func (w *Worker) RunOne(ctx context.Context) error {
 			return w.cards.UpdateIncidentCard(ctx, incident.FeishuMessageID, incident, domain.RCAResult{Summary: "CloudMonitor alert recovered."})
 		}
 	}
-	if err := w.repo.MarkInvestigating(ctx, incident.ID, now); err != nil {
+	if err := w.repo.MarkInvestigatingForClaim(ctx, job, now); err != nil {
 		if isInactive(err) {
 			return nil
 		}

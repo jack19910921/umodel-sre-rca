@@ -30,7 +30,7 @@ type Repository interface {
 	Enqueue(context.Context, string, time.Time) error
 	ClaimNext(context.Context, string, time.Time) (domain.Job, bool, error)
 	CheckActiveClaim(context.Context, domain.Job) error
-	MarkInvestigating(context.Context, string, time.Time) error
+	MarkInvestigatingForClaim(context.Context, domain.Job, time.Time) error
 	SetFeishuMessageID(context.Context, string, string, time.Time) error
 	SetFeishuMessageIDForClaim(context.Context, domain.Job, string, time.Time) error
 	UpdateActiveClaimCard(context.Context, domain.Job, func(domain.Incident) error) error
@@ -147,12 +147,22 @@ func (r *SQLiteRepository) IncidentByID(ctx context.Context, id string) (domain.
 	return in, nil
 }
 
-func (r *SQLiteRepository) MarkInvestigating(ctx context.Context, incidentID string, at time.Time) error {
-	result, err := r.db.ExecContext(ctx, `UPDATE incidents SET state = ?, updated_at = ? WHERE id = ? AND state IN ('RECEIVED','AWAITING_AUDIT_EVENT')`, domain.IncidentInvestigating, at.Unix(), incidentID)
+func (r *SQLiteRepository) MarkInvestigatingForClaim(ctx context.Context, job domain.Job, at time.Time) error {
+	result, err := r.db.ExecContext(ctx, `UPDATE incidents SET state = ?, updated_at = ? WHERE id = ? AND state IN ('RECEIVED','AWAITING_AUDIT_EVENT') AND EXISTS (SELECT 1 FROM jobs WHERE id = ? AND incident_id = ? AND status = ? AND worker_id = ? AND lease_until = ?)`, domain.IncidentInvestigating, at.Unix(), job.IncidentID, job.ID, job.IncidentID, domain.JobRunning, job.WorkerID, job.LeaseUntil.Unix())
 	if err != nil {
 		return err
 	}
-	return oneRow(result, "mark investigating", incidentID)
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if changed == 1 {
+		return nil
+	}
+	if err := r.CheckActiveClaim(ctx, job); err != nil {
+		return err
+	}
+	return ErrIncidentInactive
 }
 
 func (r *SQLiteRepository) SetFeishuMessageID(ctx context.Context, incidentID, messageID string, at time.Time) error {

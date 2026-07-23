@@ -242,6 +242,34 @@ func TestWorkerChecksLiveClaimBeforeCreatingCard(t *testing.T) {
 	}
 }
 
+func TestWorkerLeaseFenceStopsBeforeInvestigatingAfterReclaim(t *testing.T) {
+	base, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = base.Close() })
+	incident := enqueueFixtureIncident(t, base)
+	if err := base.SetFeishuMessageID(context.Background(), incident.ID, "om-existing", time.Unix(101, 0)); err != nil {
+		t.Fatal(err)
+	}
+	repo := &reclaimBeforeInvestigatingRepo{SQLiteRepository: base}
+	cards := &recordingCards{}
+	w := New(repo, cards, fakeEvidence{}, fakeRunner{result: validResult()}, "worker-a", func() time.Time { return time.Unix(200, 0) })
+	if err := w.RunOne(context.Background()); err != nil {
+		t.Fatalf("RunOne returned stale-claim error: %v", err)
+	}
+	if events := cards.eventsSnapshot(); len(events) != 0 {
+		t.Fatalf("card events=%v, want none after stale claim", events)
+	}
+	got := mustIncidentByID(t, base, incident.ID)
+	if got.State != domain.IncidentReceived {
+		t.Fatalf("incident state=%s, want %s", got.State, domain.IncidentReceived)
+	}
+	if err := base.CheckActiveClaim(context.Background(), repo.reclaimed); err != nil {
+		t.Fatalf("worker-b claim changed after stale investigating attempt: %v", err)
+	}
+}
+
 func TestWorkerCardFenceLetsRecoveryWin(t *testing.T) {
 	base, err := store.Open(":memory:")
 	if err != nil {
@@ -310,7 +338,7 @@ func TestWorkerCreatesRecoveredCardWhenRecoveryWinsBeforeMessageIDPersistence(t 
 
 type markInvestigatingFailureRepo struct{ *store.SQLiteRepository }
 
-func (markInvestigatingFailureRepo) MarkInvestigating(context.Context, string, time.Time) error {
+func (markInvestigatingFailureRepo) MarkInvestigatingForClaim(context.Context, domain.Job, time.Time) error {
 	return errors.New("write unavailable")
 }
 
@@ -356,6 +384,23 @@ type reclaimBeforeCardRepo struct {
 type reclaimBeforeCreateRepo struct {
 	*store.SQLiteRepository
 	reclaimed domain.Job
+}
+
+type reclaimBeforeInvestigatingRepo struct {
+	*store.SQLiteRepository
+	reclaimed domain.Job
+}
+
+func (r *reclaimBeforeInvestigatingRepo) MarkInvestigatingForClaim(ctx context.Context, job domain.Job, at time.Time) error {
+	reclaimed, ok, err := r.SQLiteRepository.ClaimNext(ctx, "worker-b", time.Unix(501, 0))
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return errors.New("worker-b could not reclaim expired lease")
+	}
+	r.reclaimed = reclaimed
+	return r.SQLiteRepository.MarkInvestigatingForClaim(ctx, job, at)
 }
 
 func (r *reclaimBeforeCreateRepo) CheckActiveClaim(ctx context.Context, job domain.Job) error {

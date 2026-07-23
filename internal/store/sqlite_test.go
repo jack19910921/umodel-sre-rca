@@ -116,6 +116,32 @@ func TestClaimFenceRejectsStaleCompletionAndRetry(t *testing.T) {
 	assertLiveClaimUnchanged(t, repo, incident.ID, second)
 }
 
+func TestClaimFenceRejectsStaleInvestigatingTransition(t *testing.T) {
+	repo := newTestRepo(t)
+	ctx := context.Background()
+	incident, _, err := repo.CreateOrGetIncident(ctx, domain.NewIncident("ws", "rule-1", "i-investigating-fence", time.Unix(100, 0)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.Enqueue(ctx, incident.ID, time.Unix(100, 0)); err != nil {
+		t.Fatal(err)
+	}
+	first, ok, err := repo.ClaimNext(ctx, "worker-a", time.Unix(100, 0))
+	if err != nil || !ok {
+		t.Fatalf("first=%#v ok=%v err=%v", first, ok, err)
+	}
+	second, ok, err := repo.ClaimNext(ctx, "worker-b", time.Unix(401, 0))
+	if err != nil || !ok {
+		t.Fatalf("second=%#v ok=%v err=%v", second, ok, err)
+	}
+
+	err = repo.MarkInvestigatingForClaim(ctx, first, time.Unix(402, 0))
+	if !errors.Is(err, ErrJobLeaseLost) {
+		t.Fatalf("stale investigating err=%v, want ErrJobLeaseLost", err)
+	}
+	assertLiveClaimUnchanged(t, repo, incident.ID, second)
+}
+
 func TestClaimFenceRejectsStalePendingAuditSchedule(t *testing.T) {
 	repo := newTestRepo(t)
 	ctx := context.Background()
