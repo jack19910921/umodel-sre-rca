@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -74,6 +75,89 @@ func TestClaimNextReclaimsExpiredLeaseButNotRecoveredCancelledJob(t *testing.T) 
 	}
 	if _, ok, err := repo.ClaimNext(ctx, "worker-c", time.Unix(1000, 0)); err != nil || ok {
 		t.Fatalf("cancelled recovered job was reclaimed: ok=%v err=%v", ok, err)
+	}
+}
+
+func TestClaimFenceRejectsStaleCompletionAndRetry(t *testing.T) {
+	repo := newTestRepo(t)
+	ctx := context.Background()
+	incident, _, err := repo.CreateOrGetIncident(ctx, domain.NewIncident("ws", "rule-1", "i-lease-fence", time.Unix(100, 0)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.Enqueue(ctx, incident.ID, time.Unix(100, 0)); err != nil {
+		t.Fatal(err)
+	}
+	first, ok, err := repo.ClaimNext(ctx, "worker-a", time.Unix(100, 0))
+	if err != nil || !ok {
+		t.Fatalf("first=%#v ok=%v err=%v", first, ok, err)
+	}
+	second, ok, err := repo.ClaimNext(ctx, "worker-b", time.Unix(401, 0))
+	if err != nil || !ok {
+		t.Fatalf("second=%#v ok=%v err=%v", second, ok, err)
+	}
+
+	err = repo.CompleteJobAndIncident(ctx, first, incident.ID, domain.RCAResult{Summary: "done"}, time.Unix(402, 0))
+	if !errors.Is(err, ErrJobLeaseLost) {
+		t.Fatalf("stale completion err=%v, want ErrJobLeaseLost", err)
+	}
+	assertLiveClaimUnchanged(t, repo, incident.ID, second)
+
+	_, err = repo.RetryOrFailJob(ctx, first, time.Unix(402, 0), 3)
+	if !errors.Is(err, ErrJobLeaseLost) {
+		t.Fatalf("stale retry err=%v, want ErrJobLeaseLost", err)
+	}
+	assertLiveClaimUnchanged(t, repo, incident.ID, second)
+
+	_, err = repo.RetryOrFailJob(ctx, first, time.Unix(402, 0), 1)
+	if !errors.Is(err, ErrJobLeaseLost) {
+		t.Fatalf("stale fail err=%v, want ErrJobLeaseLost", err)
+	}
+	assertLiveClaimUnchanged(t, repo, incident.ID, second)
+}
+
+func TestClaimFenceRejectsStalePendingAuditSchedule(t *testing.T) {
+	repo := newTestRepo(t)
+	ctx := context.Background()
+	incident, _, err := repo.CreateOrGetIncident(ctx, domain.NewIncident("ws", "rule-1", "i-audit-fence", time.Unix(100, 0)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.Enqueue(ctx, incident.ID, time.Unix(100, 0)); err != nil {
+		t.Fatal(err)
+	}
+	first, ok, err := repo.ClaimNext(ctx, "worker-a", time.Unix(100, 0))
+	if err != nil || !ok {
+		t.Fatalf("first=%#v ok=%v err=%v", first, ok, err)
+	}
+	second, ok, err := repo.ClaimNext(ctx, "worker-b", time.Unix(401, 0))
+	if err != nil || !ok {
+		t.Fatalf("second=%#v ok=%v err=%v", second, ok, err)
+	}
+
+	err = repo.CompleteJobAndScheduleAuditRetry(ctx, first, incident.ID, time.Unix(522, 0))
+	if !errors.Is(err, ErrJobLeaseLost) {
+		t.Fatalf("stale pending-audit err=%v, want ErrJobLeaseLost", err)
+	}
+	assertLiveClaimUnchanged(t, repo, incident.ID, second)
+}
+
+func assertLiveClaimUnchanged(t *testing.T, repo *SQLiteRepository, incidentID string, want domain.Job) {
+	t.Helper()
+	incident, err := repo.IncidentByID(context.Background(), incidentID)
+	if err != nil || incident.State != domain.IncidentReceived {
+		t.Fatalf("incident=%#v err=%v", incident, err)
+	}
+	var got domain.Job
+	var runAfter, leaseUntil int64
+	err = repo.db.QueryRow(`SELECT id, incident_id, status, worker_id, attempt, run_after, lease_until FROM jobs WHERE id = ?`, want.ID).
+		Scan(&got.ID, &got.IncidentID, &got.Status, &got.WorkerID, &got.Attempt, &runAfter, &leaseUntil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got.RunAfter, got.LeaseUntil = time.Unix(runAfter, 0).UTC(), time.Unix(leaseUntil, 0).UTC()
+	if got.ID != want.ID || got.Status != domain.JobRunning || got.WorkerID != want.WorkerID || !got.LeaseUntil.Equal(want.LeaseUntil) || got.Attempt != want.Attempt {
+		t.Fatalf("live claim=%#v, want unchanged %#v", got, want)
 	}
 }
 

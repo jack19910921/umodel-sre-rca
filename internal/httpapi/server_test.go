@@ -25,6 +25,17 @@ func TestCaptureRejectsWrongToken(t *testing.T) {
 	}
 }
 
+func TestNewGatewayRemainsStronglyTypedAndNotifierIsExplicit(t *testing.T) {
+	var _ func(string, string, ...incidentRepository) http.Handler = NewGateway
+	repo := newTestRepo(t)
+	srv := NewGatewayWithNotifier("test-token", "", repo, &fakeRecoveryNotifier{})
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("code=%d", rec.Code)
+	}
+}
+
 func TestCaptureWritesRedactedFixture(t *testing.T) {
 	dir := t.TempDir()
 	srv := NewGateway("test-token", dir)
@@ -104,7 +115,7 @@ func TestCloudMonitorRecoveredMarksActiveIncidentRecovered(t *testing.T) {
 func TestCloudMonitorRecoveryNotifiesExistingCard(t *testing.T) {
 	repo := newTestRepo(t)
 	notifier := &fakeRecoveryNotifier{}
-	srv := NewGateway("test-token", "", repo, notifier)
+	srv := NewGatewayWithNotifier("test-token", "", repo, notifier)
 	incident, _, err := repo.CreateOrGetIncident(context.Background(), domain.NewIncident("ws", "rule-1", "i-demo", time.Unix(100, 0)))
 	if err != nil {
 		t.Fatal(err)
@@ -142,7 +153,7 @@ func TestCloudMonitorRecoveryReturnsFailureForPersistenceError(t *testing.T) {
 func TestCloudMonitorRetriesRecoveryCardForDuplicateCallback(t *testing.T) {
 	repo := newTestRepo(t)
 	notifier := &flakyRecoveryNotifier{failures: 2}
-	srv := NewGateway("test-token", "", repo, notifier)
+	srv := NewGatewayWithNotifier("test-token", "", repo, notifier)
 	incident, _, err := repo.CreateOrGetIncident(context.Background(), domain.NewIncident("ws", "rule-1", "i-demo", time.Unix(100, 0)))
 	if err != nil {
 		t.Fatal(err)
@@ -179,7 +190,7 @@ func TestCloudMonitorRetriesRecoveryCardForDuplicateCallback(t *testing.T) {
 func TestCloudMonitorOldRecoveryDoesNotCloseNewerGeneration(t *testing.T) {
 	repo := newTestRepo(t)
 	notifier := &flakyRecoveryNotifier{failures: 1}
-	srv := NewGateway("test-token", "", repo, notifier)
+	srv := NewGatewayWithNotifier("test-token", "", repo, notifier)
 	first, _, err := repo.CreateOrGetIncident(context.Background(), domain.NewIncident("ws", "rule-1", "i-demo", time.Unix(10, 0)))
 	if err != nil {
 		t.Fatal(err)

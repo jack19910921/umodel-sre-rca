@@ -25,17 +25,19 @@ type RecoveryNotifier interface {
 	UpdateIncidentCard(context.Context, string, domain.Incident, domain.RCAResult) error
 }
 
-func NewGateway(callbackToken, captureDir string, dependencies ...any) http.Handler {
+func NewGateway(callbackToken, captureDir string, repositories ...incidentRepository) http.Handler {
 	var repo incidentRepository
-	var notifier RecoveryNotifier
-	for _, dependency := range dependencies {
-		switch value := dependency.(type) {
-		case incidentRepository:
-			repo = value
-		case RecoveryNotifier:
-			notifier = value
-		}
+	if len(repositories) > 0 {
+		repo = repositories[0]
 	}
+	return newGateway(callbackToken, captureDir, repo, nil)
+}
+
+func NewGatewayWithNotifier(callbackToken, captureDir string, repo incidentRepository, notifier RecoveryNotifier) http.Handler {
+	return newGateway(callbackToken, captureDir, repo, notifier)
+}
+
+func newGateway(callbackToken, captureDir string, repo incidentRepository, notifier RecoveryNotifier) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})

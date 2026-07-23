@@ -237,11 +237,18 @@ func (markInvestigatingFailureRepo) MarkInvestigating(context.Context, string, t
 
 type crashAfterCompleteJobRepo struct{ *store.SQLiteRepository }
 
-func (r crashAfterCompleteJobRepo) CompleteJob(ctx context.Context, jobID string) error {
-	if err := r.SQLiteRepository.CompleteJob(ctx, jobID); err != nil {
+func (r crashAfterCompleteJobRepo) CompleteJobAndIncident(ctx context.Context, job domain.Job, incidentID string, result domain.RCAResult, at time.Time) error {
+	if err := r.SQLiteRepository.CompleteJobAndIncident(ctx, job, incidentID, result, at); err != nil {
 		return err
 	}
-	panic("simulated process crash after completing current job")
+	panic("simulated process crash after terminal transaction")
+}
+
+func (r crashAfterCompleteJobRepo) CompleteJobAndScheduleAuditRetry(ctx context.Context, job domain.Job, incidentID string, retryAt time.Time) error {
+	if err := r.SQLiteRepository.CompleteJobAndScheduleAuditRetry(ctx, job, incidentID, retryAt); err != nil {
+		return err
+	}
+	panic("simulated process crash after terminal transaction")
 }
 
 func runWorkerSafely(w *Worker) (err error) {
