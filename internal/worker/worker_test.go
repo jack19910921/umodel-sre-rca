@@ -175,30 +175,30 @@ func TestWorkerCardFenceLetsRecoveryWin(t *testing.T) {
 	incident := enqueueFixtureIncident(t, base)
 	cards := newBlockingCards()
 	w := New(base, cards, fakeEvidence{}, fakeRunner{result: validResult()}, "worker-a", func() time.Time { return time.Unix(200, 0) })
-	recoveryContending := make(chan struct{})
-	base.SetRecoveryFenceContentionHookForTest(func() { close(recoveryContending) })
 	done := make(chan error, 1)
 	go func() { done <- w.RunOne(context.Background()) }()
 	<-cards.workerUpdateStarted
 
+	allowRecovery := make(chan struct{})
 	recovered := make(chan error, 1)
 	go func() {
+		<-allowRecovery
 		got, ok, err := base.Recover(context.Background(), incident.Key, time.Unix(201, 0))
 		if err == nil && ok {
 			err = cards.UpdateIncidentCard(context.Background(), got.FeishuMessageID, got, domain.RCAResult{Summary: "CloudMonitor alert recovered."})
 		}
 		recovered <- err
 	}()
-	<-recoveryContending
 	close(cards.releaseWorkerUpdate)
-	if err := <-recovered; err != nil {
-		t.Fatal(err)
-	}
 	if err := <-done; err != nil {
 		t.Fatal(err)
 	}
+	close(allowRecovery)
+	if err := <-recovered; err != nil {
+		t.Fatal(err)
+	}
 	events := cards.eventsSnapshot()
-	if len(events) != 2 || events[0] != domain.IncidentInvestigating || events[1] != domain.IncidentRecovered {
+	if len(events) != 3 || events[0] != domain.IncidentInvestigating || events[1] != domain.IncidentCompleted || events[2] != domain.IncidentRecovered {
 		t.Fatalf("card events=%v", events)
 	}
 }

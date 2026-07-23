@@ -239,6 +239,54 @@ func TestRecoverCancelsQueuedJob(t *testing.T) {
 	}
 }
 
+func TestRecoverClosesCompletedOrFailedIncidentWithoutChangingTerminalJob(t *testing.T) {
+	for _, terminal := range []struct {
+		name       string
+		wantStatus string
+	}{
+		{
+			name:       "completed",
+			wantStatus: domain.JobCompleted,
+		},
+		{
+			name:       "failed",
+			wantStatus: domain.JobFailed,
+		},
+	} {
+		t.Run(terminal.name, func(t *testing.T) {
+			repo := newTestRepo(t)
+			ctx := context.Background()
+			incident, _, err := repo.CreateOrGetIncident(ctx, domain.NewIncident("ws", "rule-1", "i-demo", time.Unix(10, 0)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := repo.Enqueue(ctx, incident.ID, time.Unix(10, 0)); err != nil {
+				t.Fatal(err)
+			}
+			job, ok, err := repo.ClaimNext(ctx, "worker-a", time.Unix(11, 0))
+			if err != nil || !ok {
+				t.Fatalf("job=%#v ok=%v err=%v", job, ok, err)
+			}
+
+			if terminal.name == "completed" {
+				if err := repo.CompleteJobAndIncident(ctx, job, incident.ID, domain.RCAResult{Summary: "done"}, time.Unix(12, 0)); err != nil {
+					t.Fatal(err)
+				}
+			} else if _, err := repo.RetryOrFailJob(ctx, job, time.Unix(12, 0), 1); err != nil {
+				t.Fatal(err)
+			}
+
+			got, recovered, err := repo.Recover(ctx, incident.Key, time.Unix(20, 0))
+			if err != nil || !recovered || got.State != domain.IncidentRecovered {
+				t.Fatalf("incident=%#v recovered=%v err=%v", got, recovered, err)
+			}
+			if status := onlyJobStatus(t, repo, incident.ID); status != terminal.wantStatus {
+				t.Fatalf("status=%s want=%s", status, terminal.wantStatus)
+			}
+		})
+	}
+}
+
 func countEvidenceSnapshots(t *testing.T, repo *SQLiteRepository, incidentID string) int {
 	t.Helper()
 	var count int
