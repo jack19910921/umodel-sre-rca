@@ -3,9 +3,7 @@ package httpapi
 import (
 	"context"
 	"crypto/subtle"
-	"database/sql"
 	"encoding/json"
-	"errors"
 	"io"
 	"net/http"
 	"time"
@@ -19,16 +17,30 @@ const maxCallbackBytes = 256 * 1024
 type incidentRepository interface {
 	CreateOrGetIncident(context.Context, domain.Incident) (domain.Incident, bool, error)
 	Enqueue(context.Context, string, time.Time) error
-	MarkRecovered(context.Context, string, time.Time) error
+	Recover(context.Context, string, time.Time) (domain.Incident, bool, error)
 }
 
-func NewGateway(callbackToken, captureDir string, repositories ...incidentRepository) http.Handler {
+type RecoveryNotifier interface {
+	UpdateIncidentCard(context.Context, string, domain.Incident, domain.RCAResult) error
+}
+
+func NewGateway(callbackToken, captureDir string, dependencies ...any) http.Handler {
+	var repo incidentRepository
+	var notifier RecoveryNotifier
+	for _, dependency := range dependencies {
+		switch value := dependency.(type) {
+		case incidentRepository:
+			repo = value
+		case RecoveryNotifier:
+			notifier = value
+		}
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 	})
-	if len(repositories) == 1 && repositories[0] != nil {
-		registerCloudMonitorIngress(mux, callbackToken, repositories[0])
+	if repo != nil {
+		registerCloudMonitorIngress(mux, callbackToken, repo, notifier)
 	}
 	if captureDir == "" {
 		return mux
@@ -56,7 +68,7 @@ func NewGateway(callbackToken, captureDir string, repositories ...incidentReposi
 	return mux
 }
 
-func registerCloudMonitorIngress(mux *http.ServeMux, callbackToken string, repo incidentRepository) {
+func registerCloudMonitorIngress(mux *http.ServeMux, callbackToken string, repo incidentRepository, notifier RecoveryNotifier) {
 	mux.HandleFunc("POST /v1/inbound/cloudmonitor", func(w http.ResponseWriter, r *http.Request) {
 		if !authorized(r, callbackToken) {
 			writeJSON(w, http.StatusUnauthorized, map[string]bool{"accepted": false})
@@ -75,13 +87,20 @@ func registerCloudMonitorIngress(mux *http.ServeMux, callbackToken string, repo 
 			return
 		}
 		if event.Transition == inbound.AlertRecovered {
-			if err := repo.MarkRecovered(r.Context(), domain.NewIncident(event.Alert.Workspace, event.Alert.RuleID, event.Alert.ResourceID, event.Alert.EventAt).Key, event.Alert.EventAt); err != nil {
-				if errors.Is(err, sql.ErrNoRows) {
-					writeJSON(w, http.StatusAccepted, map[string]any{"accepted": true, "state": "recovery_ignored"})
-					return
-				}
+			incident, recovered, err := repo.Recover(r.Context(), domain.NewIncident(event.Alert.Workspace, event.Alert.RuleID, event.Alert.ResourceID, event.Alert.EventAt).Key, event.Alert.EventAt)
+			if err != nil {
 				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "persist recovery"})
 				return
+			}
+			if !recovered {
+				writeJSON(w, http.StatusAccepted, map[string]any{"accepted": true, "state": "recovery_ignored"})
+				return
+			}
+			if incident.FeishuMessageID != "" && notifier != nil {
+				if err := notifier.UpdateIncidentCard(r.Context(), incident.FeishuMessageID, incident, domain.RCAResult{Summary: "CloudMonitor alert recovered."}); err != nil {
+					writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "notify recovery"})
+					return
+				}
 			}
 			writeJSON(w, http.StatusAccepted, map[string]any{"accepted": true, "state": "recovered"})
 			return

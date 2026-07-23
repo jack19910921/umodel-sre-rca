@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -12,6 +13,8 @@ import (
 )
 
 type SQLiteRepository struct{ db *sql.DB }
+
+var ErrIncidentInactive = errors.New("incident is not active")
 
 // Repository is the persistence boundary used by inbound handlers and workers.
 // It deliberately exposes domain operations instead of raw SQL state updates.
@@ -27,7 +30,10 @@ type Repository interface {
 	Complete(context.Context, string, domain.RCAResult, time.Time) error
 	Fail(context.Context, string, time.Time) error
 	ScheduleAuditRetry(context.Context, string, time.Time) error
-	MarkRecovered(context.Context, string, time.Time) error
+	Recover(context.Context, string, time.Time) (domain.Incident, bool, error)
+	CompleteJob(context.Context, string) error
+	RetryOrFailJob(context.Context, domain.Job, time.Time, int) (bool, error)
+	CancelJobsForIncident(context.Context, string) error
 }
 
 func Open(path string) (*SQLiteRepository, error) {
@@ -103,11 +109,11 @@ func (r *SQLiteRepository) SetFeishuMessageID(ctx context.Context, incidentID, m
 	if messageID == "" {
 		return fmt.Errorf("Feishu message id is required")
 	}
-	result, err := r.db.ExecContext(ctx, `UPDATE incidents SET feishu_message_id = ?, updated_at = ? WHERE id = ?`, messageID, at.Unix(), incidentID)
+	result, err := r.db.ExecContext(ctx, `UPDATE incidents SET feishu_message_id = ?, updated_at = ? WHERE id = ? AND state IN ('RECEIVED','INVESTIGATING','AWAITING_AUDIT_EVENT')`, messageID, at.Unix(), incidentID)
 	if err != nil {
 		return err
 	}
-	return oneRow(result, "set Feishu message id", incidentID)
+	return activeRow(result, "set Feishu message id", incidentID)
 }
 
 func (r *SQLiteRepository) StoreEvidence(ctx context.Context, incidentID string, evidence []domain.Evidence, at time.Time) error {
@@ -157,7 +163,7 @@ func (r *SQLiteRepository) Complete(ctx context.Context, incidentID string, resu
 	if err != nil {
 		return err
 	}
-	if err := oneRow(updated, "complete incident", incidentID); err != nil {
+	if err := activeRow(updated, "complete incident", incidentID); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO evidence_snapshots (id, incident_id, evidence_json, created_at) VALUES (?, ?, ?, ?)`, domainSnapshotID(), incidentID, string(raw), at.Unix()); err != nil {
@@ -171,7 +177,7 @@ func (r *SQLiteRepository) Fail(ctx context.Context, incidentID string, at time.
 	if err != nil {
 		return err
 	}
-	return oneRow(result, "fail incident", incidentID)
+	return activeRow(result, "fail incident", incidentID)
 }
 
 func (r *SQLiteRepository) ScheduleAuditRetry(ctx context.Context, incidentID string, retryAt time.Time) error {
@@ -184,7 +190,7 @@ func (r *SQLiteRepository) ScheduleAuditRetry(ctx context.Context, incidentID st
 	if err != nil {
 		return err
 	}
-	if err := oneRow(updated, "schedule audit retry", incidentID); err != nil {
+	if err := activeRow(updated, "schedule audit retry", incidentID); err != nil {
 		return err
 	}
 	job := domain.NewJob(incidentID, retryAt)
@@ -194,12 +200,41 @@ func (r *SQLiteRepository) ScheduleAuditRetry(ctx context.Context, incidentID st
 	return tx.Commit()
 }
 
-func (r *SQLiteRepository) MarkRecovered(ctx context.Context, incidentKey string, at time.Time) error {
-	result, err := r.db.ExecContext(ctx, `UPDATE incidents SET state = ?, updated_at = ? WHERE incident_key = ? AND state IN ('RECEIVED','INVESTIGATING','AWAITING_AUDIT_EVENT')`, domain.IncidentRecovered, at.Unix(), incidentKey)
+func (r *SQLiteRepository) Recover(ctx context.Context, incidentKey string, at time.Time) (domain.Incident, bool, error) {
+	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
-		return err
+		return domain.Incident{}, false, err
 	}
-	return oneRow(result, "recover incident", incidentKey)
+	defer tx.Rollback()
+	row := tx.QueryRowContext(ctx, `SELECT id, incident_key, workspace, rule_id, resource_id, state, feishu_message_id, alert_at, created_at, updated_at FROM incidents WHERE incident_key = ? AND state IN ('RECEIVED','INVESTIGATING','AWAITING_AUDIT_EVENT')`, incidentKey)
+	incident, err := scanIncident(row)
+	if err == sql.ErrNoRows {
+		return domain.Incident{}, false, tx.Commit()
+	}
+	if err != nil {
+		return domain.Incident{}, false, err
+	}
+	updated, err := tx.ExecContext(ctx, `UPDATE incidents SET state = ?, updated_at = ? WHERE id = ? AND state IN ('RECEIVED','INVESTIGATING','AWAITING_AUDIT_EVENT')`, domain.IncidentRecovered, at.Unix(), incident.ID)
+	if err != nil {
+		return domain.Incident{}, false, err
+	}
+	if err := oneRow(updated, "recover incident", incidentKey); err != nil {
+		return domain.Incident{}, false, err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE jobs SET status = ? WHERE incident_id = ? AND status IN (?, ?)`, domain.JobCancelled, incident.ID, domain.JobQueued, domain.JobRunning); err != nil {
+		return domain.Incident{}, false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return domain.Incident{}, false, err
+	}
+	incident.State = domain.IncidentRecovered
+	incident.UpdatedAt = at.UTC()
+	return incident, true, nil
+}
+
+func (r *SQLiteRepository) CancelJobsForIncident(ctx context.Context, incidentID string) error {
+	_, err := r.db.ExecContext(ctx, `UPDATE jobs SET status = ? WHERE incident_id = ? AND status IN (?, ?)`, domain.JobCancelled, incidentID, domain.JobQueued, domain.JobRunning)
+	return err
 }
 
 func (r *SQLiteRepository) ClaimNext(ctx context.Context, workerID string, now time.Time) (domain.Job, bool, error) {
@@ -226,6 +261,54 @@ func (r *SQLiteRepository) ClaimNext(ctx context.Context, workerID string, now t
 	}
 	job.Status, job.WorkerID, job.Attempt = domain.JobRunning, workerID, job.Attempt+1
 	return job, true, tx.Commit()
+}
+
+func (r *SQLiteRepository) CompleteJob(ctx context.Context, jobID string) error {
+	result, err := r.db.ExecContext(ctx, `UPDATE jobs SET status = ? WHERE id = ? AND status = ? AND EXISTS (SELECT 1 FROM incidents WHERE incidents.id = jobs.incident_id AND state IN ('RECEIVED','INVESTIGATING','AWAITING_AUDIT_EVENT','COMPLETED'))`, domain.JobCompleted, jobID, domain.JobRunning)
+	if err != nil {
+		return err
+	}
+	return activeRow(result, "complete job", jobID)
+}
+
+func (r *SQLiteRepository) RetryOrFailJob(ctx context.Context, job domain.Job, at time.Time, maxAttempts int) (bool, error) {
+	if maxAttempts < 1 {
+		return false, fmt.Errorf("max attempts must be positive")
+	}
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+	if job.Attempt >= maxAttempts {
+		updated, err := tx.ExecContext(ctx, `UPDATE incidents SET state = ?, updated_at = ? WHERE id = ? AND state IN ('RECEIVED','INVESTIGATING','AWAITING_AUDIT_EVENT')`, domain.IncidentFailed, at.Unix(), job.IncidentID)
+		if err != nil {
+			return false, err
+		}
+		if err := activeRow(updated, "fail incident", job.IncidentID); err != nil {
+			return false, err
+		}
+		jobUpdate, err := tx.ExecContext(ctx, `UPDATE jobs SET status = ? WHERE id = ? AND status = ?`, domain.JobFailed, job.ID, domain.JobRunning)
+		if err != nil {
+			return false, err
+		}
+		if err := oneRow(jobUpdate, "fail job", job.ID); err != nil {
+			return false, err
+		}
+		return true, tx.Commit()
+	}
+	delay := time.Duration(job.Attempt) * 5 * time.Second
+	if delay > 30*time.Second {
+		delay = 30 * time.Second
+	}
+	updated, err := tx.ExecContext(ctx, `UPDATE jobs SET status = ?, worker_id = '', run_after = ? WHERE id = ? AND status = ? AND EXISTS (SELECT 1 FROM incidents WHERE incidents.id = jobs.incident_id AND state IN ('RECEIVED','INVESTIGATING','AWAITING_AUDIT_EVENT'))`, domain.JobQueued, at.Add(delay).Unix(), job.ID, domain.JobRunning)
+	if err != nil {
+		return false, err
+	}
+	if err := activeRow(updated, "retry job", job.ID); err != nil {
+		return false, err
+	}
+	return false, tx.Commit()
 }
 
 func scanIncident(row interface{ Scan(...any) error }) (domain.Incident, error) {
@@ -257,6 +340,17 @@ func oneRow(result sql.Result, operation, id string) error {
 	}
 	if changed != 1 {
 		return fmt.Errorf("%s %s: %w", operation, id, sql.ErrNoRows)
+	}
+	return nil
+}
+
+func activeRow(result sql.Result, operation, id string) error {
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if changed != 1 {
+		return fmt.Errorf("%s %s: %w", operation, id, ErrIncidentInactive)
 	}
 	return nil
 }

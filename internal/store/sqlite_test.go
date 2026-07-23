@@ -94,18 +94,37 @@ func TestScheduleAuditRetryMarksIncidentAndQueuesJob(t *testing.T) {
 	}
 }
 
-func TestMarkRecoveredClosesActiveIncident(t *testing.T) {
+func TestRecoverClosesActiveIncident(t *testing.T) {
 	repo := newTestRepo(t)
 	incident, _, err := repo.CreateOrGetIncident(context.Background(), domain.NewIncident("ws", "rule-1", "i-demo", time.Unix(100, 0)))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := repo.MarkRecovered(context.Background(), incident.Key, time.Unix(120, 0)); err != nil {
-		t.Fatal(err)
+	got, recovered, err := repo.Recover(context.Background(), incident.Key, time.Unix(120, 0))
+	if err != nil || !recovered || got.State != domain.IncidentRecovered {
+		t.Fatalf("incident=%#v recovered=%v err=%v", got, recovered, err)
 	}
-	got, err := repo.IncidentByID(context.Background(), incident.ID)
+	got, err = repo.IncidentByID(context.Background(), incident.ID)
 	if err != nil || got.State != domain.IncidentRecovered {
 		t.Fatalf("incident=%#v err=%v", got, err)
+	}
+}
+
+func TestRecoverCancelsQueuedJob(t *testing.T) {
+	repo := newTestRepo(t)
+	incident, _, err := repo.CreateOrGetIncident(context.Background(), domain.NewIncident("ws", "rule-1", "i-demo", time.Unix(100, 0)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.Enqueue(context.Background(), incident.ID, time.Unix(101, 0)); err != nil {
+		t.Fatal(err)
+	}
+	got, recovered, err := repo.Recover(context.Background(), incident.Key, time.Unix(200, 0))
+	if err != nil || !recovered || got.State != domain.IncidentRecovered {
+		t.Fatalf("got=%#v recovered=%v err=%v", got, recovered, err)
+	}
+	if status := onlyJobStatus(t, repo, incident.ID); status != domain.JobCancelled {
+		t.Fatalf("status=%s", status)
 	}
 }
 
@@ -116,4 +135,13 @@ func countEvidenceSnapshots(t *testing.T, repo *SQLiteRepository, incidentID str
 		t.Fatal(err)
 	}
 	return count
+}
+
+func onlyJobStatus(t *testing.T, repo *SQLiteRepository, incidentID string) string {
+	t.Helper()
+	var status string
+	if err := repo.db.QueryRow(`SELECT status FROM jobs WHERE incident_id = ?`, incidentID).Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	return status
 }

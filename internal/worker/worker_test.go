@@ -90,3 +90,38 @@ func TestWorkerRetriesPendingAuditAfter120Seconds(t *testing.T) {
 		t.Fatalf("job=%#v ok=%v err=%v", job, ok, err)
 	}
 }
+
+func TestWorkerDoesNotOverwriteRecoveredIncident(t *testing.T) {
+	w, repo, cards := newWorker(t, validResult())
+	incident := enqueueFixtureIncident(t, repo)
+	mustRecover(t, repo, incident)
+	if err := w.RunOne(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := mustIncidentByID(t, repo, incident.ID); got.State != domain.IncidentRecovered {
+		t.Fatalf("state=%s", got.State)
+	}
+	if cards.updates != 0 {
+		t.Fatalf("updates=%d", cards.updates)
+	}
+}
+
+func validResult() domain.RCAResult {
+	return domain.RCAResult{Summary: "security group removed TCP/80", RootCause: "security group", Confidence: 0.9, EvidenceIDs: []string{"ev-context", "ev-change"}}
+}
+
+func mustRecover(t *testing.T, repo *store.SQLiteRepository, incident domain.Incident) {
+	t.Helper()
+	if _, recovered, err := repo.Recover(context.Background(), incident.Key, time.Unix(200, 0)); err != nil || !recovered {
+		t.Fatalf("recovered=%v err=%v", recovered, err)
+	}
+}
+
+func mustIncidentByID(t *testing.T, repo *store.SQLiteRepository, incidentID string) domain.Incident {
+	t.Helper()
+	incident, err := repo.IncidentByID(context.Background(), incidentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return incident
+}

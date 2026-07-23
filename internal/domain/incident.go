@@ -16,6 +16,9 @@ const (
 	IncidentRecovered          = "RECOVERED"
 	JobQueued                  = "QUEUED"
 	JobRunning                 = "RUNNING"
+	JobCompleted               = "COMPLETED"
+	JobCancelled               = "CANCELLED"
+	JobFailed                  = "FAILED"
 )
 
 type Alert struct {

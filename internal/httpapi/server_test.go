@@ -99,6 +99,31 @@ func TestCloudMonitorRecoveredMarksActiveIncidentRecovered(t *testing.T) {
 	}
 }
 
+func TestCloudMonitorRecoveryNotifiesExistingCard(t *testing.T) {
+	repo := newTestRepo(t)
+	notifier := &fakeRecoveryNotifier{}
+	srv := NewGateway("test-token", "", repo, notifier)
+	incident, _, err := repo.CreateOrGetIncident(context.Background(), domain.NewIncident("ws", "rule-1", "i-demo", time.Unix(100, 0)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.SetFeishuMessageID(context.Background(), incident.ID, "om-demo", time.Unix(101, 0)); err != nil {
+		t.Fatal(err)
+	}
+	body := []byte(`{
+		"type":"ALERT", "status":"RECOVERED", "workspace":"ws", "ruleId":"rule-1",
+		"time":"2026-07-22T15:14:40Z", "resource":{"entity":{"entity_id":"i-demo"}}
+	}`)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/inbound/cloudmonitor?token=test-token", bytes.NewReader(body)))
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("code=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if notifier.updates != 1 {
+		t.Fatalf("updates=%d", notifier.updates)
+	}
+}
+
 func TestCloudMonitorRecoveryReturnsFailureForPersistenceError(t *testing.T) {
 	srv := NewGateway("test-token", "", failingRecoveryRepo{})
 	rec := httptest.NewRecorder()
@@ -122,8 +147,15 @@ func (failingRecoveryRepo) Enqueue(context.Context, string, time.Time) error {
 	return errors.New("not called")
 }
 
-func (failingRecoveryRepo) MarkRecovered(context.Context, string, time.Time) error {
-	return errors.New("database unavailable")
+func (failingRecoveryRepo) Recover(context.Context, string, time.Time) (domain.Incident, bool, error) {
+	return domain.Incident{}, false, errors.New("database unavailable")
+}
+
+type fakeRecoveryNotifier struct{ updates int }
+
+func (f *fakeRecoveryNotifier) UpdateIncidentCard(context.Context, string, domain.Incident, domain.RCAResult) error {
+	f.updates++
+	return nil
 }
 
 func newTestRepo(t *testing.T) *store.SQLiteRepository {
