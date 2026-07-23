@@ -32,6 +32,7 @@ type Config struct {
 		Enabled        bool `yaml:"enabled"`
 		MaxTurns       int  `yaml:"max_turns"`
 		TimeoutSeconds int  `yaml:"timeout_seconds"`
+		PollSeconds    int  `yaml:"poll_seconds"`
 	} `yaml:"worker"`
 }
 
@@ -53,6 +54,12 @@ func Load(path string) (Config, error) {
 	if cfg.Worker.Enabled {
 		if cfg.Aliyun.Profile == "" || cfg.Aliyun.Workspace == "" || cfg.Aliyun.Region == "" || cfg.Aliyun.SLSProject == "" || cfg.Aliyun.SLSLogstore == "" || cfg.EvidenceBindingsPath == "" || cfg.IncidentBindingsPath == "" {
 			return cfg, errors.New("worker.enabled requires aliyun profile, workspace, region, SLS project/logstore, evidence_bindings_path, and incident_bindings_path")
+		}
+		if cfg.Worker.PollSeconds < 1 {
+			return cfg, errors.New("worker.enabled requires worker.poll_seconds greater than zero")
+		}
+		if cfg.Feishu.AppID == "" || cfg.Feishu.AppSecret == "" || cfg.Feishu.ChatID == "" {
+			return cfg, errors.New("worker.enabled requires feishu app_id, app_secret, and chat_id")
 		}
 	}
 	if cfg.ListenAddr == "" {

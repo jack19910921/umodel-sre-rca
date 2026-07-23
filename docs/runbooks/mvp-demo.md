@@ -101,13 +101,38 @@ audit delivery is a valid state: the eventual RCA must say
 
 Only remove the selected security group's inbound TCP/80 rule. Do not remove
 TCP/22 and do not stop the ECS, Nginx, or the gateway. Restore the same TCP/80
-rule immediately after the alert test. The gateway is not enabled until its
-callback fixture, ECS RAM role, Feishu app credentials, and read-only provider
-checks have all passed.
+rule immediately after the alert test.
 
-## 5. Deploy the local gateway only after its prerequisites pass
+## 5. Current deployment state and build boundary
 
-1. Build the two binaries in CI or on the ECS, then install them under
+CloudMonitor normal ingress is already live in the customer account: an
+`OCCURRED` callback creates an idempotent incident/job and `RECOVERED` closes
+the matching incident. The Gateway remains ingress-only. It must not launch
+Claude Code, Feishu, or a polling Worker.
+
+Build the separate `sre-worker` binary and install it alongside the Gateway
+and `sre-evidence`, but do **not** enable its systemd service until all of the
+following are true:
+
+1. The incident binding and evidence binding files have reviewed, fixed
+   selectors for this exact CloudMonitor workspace/rule/resource tuple.
+2. The ECS RAM role can read the required UModel, CloudMonitor, SLS, and
+   ActionTrail evidence sources.
+3. Logtail has delivered Nginx logs to the selected SLS Logstore.
+4. Feishu app credentials and chat ID are present only in `/etc/sre-rca/sre.env`.
+5. `scripts/verify-worker-preflight.sh` succeeds as root with
+   `SRE_RCA_PREFLIGHT_INCIDENT_ID` set. The script checks the fixed Claude,
+   evidence CLI, and STS forms as `sre-rca`; it deliberately does not enable a
+   service.
+
+Only after those checks pass may the customer install
+`deploy/worker/sre-worker.service`, run `systemctl daemon-reload`, and enable
+`sre-worker`. That is a separate change from the already-live Gateway ingress;
+it does not restart, replace, or otherwise own `sre-gateway`.
+
+## 6. Deploy the local gateway only after its prerequisites pass
+
+1. Build the three binaries in CI or on the ECS, then install them under
    `/opt/sre-rca/bin/`. Create the unprivileged `sre-rca` service user and the
    writable directory `/var/lib/sre-rca`.
 2. Copy `configs/sre.example.yaml` to `/etc/sre-rca/sre.yaml`; replace every
@@ -121,7 +146,7 @@ checks have all passed.
 5. Run `scripts/verify-mvp.sh`. A success here verifies only prerequisites; it
    is not a substitute for the CloudMonitor callback fixture or live exercise.
 
-## 6. Capture the real CloudMonitor callback contract
+## 7. Capture the real CloudMonitor callback contract
 
 This is a one-time, non-production intake mode. Keep `callback_capture_dir`
 enabled, deploy the gateway, and configure the test notification action to:

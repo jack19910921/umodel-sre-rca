@@ -7,5 +7,7 @@ aliyun:
   workspace: capture-pending
   region: cn-hangzhou
 worker:
+  enabled: false
   max_turns: 8
   timeout_seconds: 300
+  poll_seconds: 15
