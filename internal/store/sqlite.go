@@ -29,9 +29,11 @@ type Repository interface {
 	RecoveredIncidentByKey(context.Context, string, time.Time) (domain.Incident, bool, error)
 	Enqueue(context.Context, string, time.Time) error
 	ClaimNext(context.Context, string, time.Time) (domain.Job, bool, error)
+	CheckActiveClaim(context.Context, domain.Job) error
 	MarkInvestigating(context.Context, string, time.Time) error
 	SetFeishuMessageID(context.Context, string, string, time.Time) error
-	UpdateActiveIncidentCard(context.Context, string, func(domain.Incident) error) error
+	SetFeishuMessageIDForClaim(context.Context, domain.Job, string, time.Time) error
+	UpdateActiveClaimCard(context.Context, domain.Job, func(domain.Incident) error) error
 	StoreEvidence(context.Context, string, []domain.Evidence, time.Time) error
 	OpenEvidence(context.Context, string) (domain.Evidence, error)
 	Complete(context.Context, string, domain.RCAResult, time.Time) error
@@ -164,13 +166,48 @@ func (r *SQLiteRepository) SetFeishuMessageID(ctx context.Context, incidentID, m
 	return oneRow(result, "set Feishu message id", incidentID)
 }
 
-func (r *SQLiteRepository) UpdateActiveIncidentCard(ctx context.Context, incidentID string, update func(domain.Incident) error) error {
+func (r *SQLiteRepository) CheckActiveClaim(ctx context.Context, job domain.Job) error {
+	var found int
+	err := r.db.QueryRowContext(ctx, `SELECT 1 FROM jobs JOIN incidents ON incidents.id = jobs.incident_id WHERE jobs.id = ? AND jobs.incident_id = ? AND jobs.status = ? AND jobs.worker_id = ? AND jobs.lease_until = ? AND incidents.state IN ('RECEIVED','INVESTIGATING','AWAITING_AUDIT_EVENT')`, job.ID, job.IncidentID, domain.JobRunning, job.WorkerID, job.LeaseUntil.Unix()).Scan(&found)
+	if err == sql.ErrNoRows {
+		return fmt.Errorf("check active job claim %s: %w", job.ID, ErrJobLeaseLost)
+	}
+	return err
+}
+
+func (r *SQLiteRepository) SetFeishuMessageIDForClaim(ctx context.Context, job domain.Job, messageID string, at time.Time) error {
+	if messageID == "" {
+		return fmt.Errorf("Feishu message id is required")
+	}
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	row := tx.QueryRowContext(ctx, `SELECT id, incident_key, workspace, rule_id, resource_id, state, feishu_message_id, alert_at, created_at, updated_at FROM incidents WHERE id = ? AND state IN ('RECEIVED','INVESTIGATING','AWAITING_AUDIT_EVENT')`, incidentID)
+	claimed, err := tx.ExecContext(ctx, `UPDATE jobs SET lease_until = lease_until WHERE id = ? AND incident_id = ? AND status = ? AND worker_id = ? AND lease_until = ? AND EXISTS (SELECT 1 FROM incidents WHERE incidents.id = jobs.incident_id AND state IN ('RECEIVED','INVESTIGATING','AWAITING_AUDIT_EVENT'))`, job.ID, job.IncidentID, domain.JobRunning, job.WorkerID, job.LeaseUntil.Unix())
+	if err != nil {
+		return err
+	}
+	if err := leaseRow(claimed, "save card for job claim", job.ID); err != nil {
+		return err
+	}
+	updated, err := tx.ExecContext(ctx, `UPDATE incidents SET feishu_message_id = ?, updated_at = ? WHERE id = ? AND feishu_message_id = '' AND state IN ('RECEIVED','INVESTIGATING','AWAITING_AUDIT_EVENT')`, messageID, at.Unix(), job.IncidentID)
+	if err != nil {
+		return err
+	}
+	if err := activeRow(updated, "set Feishu message id", job.IncidentID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (r *SQLiteRepository) UpdateActiveClaimCard(ctx context.Context, job domain.Job, update func(domain.Incident) error) error {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	row := tx.QueryRowContext(ctx, `SELECT id, incident_key, workspace, rule_id, resource_id, state, feishu_message_id, alert_at, created_at, updated_at FROM incidents WHERE id = ? AND state IN ('RECEIVED','INVESTIGATING','AWAITING_AUDIT_EVENT')`, job.IncidentID)
 	incident, err := scanIncident(row)
 	if err == sql.ErrNoRows {
 		return ErrIncidentInactive
@@ -178,11 +215,18 @@ func (r *SQLiteRepository) UpdateActiveIncidentCard(ctx context.Context, inciden
 	if err != nil {
 		return err
 	}
-	locked, err := tx.ExecContext(ctx, `UPDATE incidents SET updated_at = updated_at WHERE id = ? AND state IN ('RECEIVED','INVESTIGATING','AWAITING_AUDIT_EVENT')`, incidentID)
+	claimed, err := tx.ExecContext(ctx, `UPDATE jobs SET lease_until = lease_until WHERE id = ? AND incident_id = ? AND status = ? AND worker_id = ? AND lease_until = ? AND EXISTS (SELECT 1 FROM incidents WHERE incidents.id = jobs.incident_id AND state IN ('RECEIVED','INVESTIGATING','AWAITING_AUDIT_EVENT'))`, job.ID, job.IncidentID, domain.JobRunning, job.WorkerID, job.LeaseUntil.Unix())
 	if err != nil {
 		return err
 	}
-	if err := activeRow(locked, "fence incident card update", incidentID); err != nil {
+	if err := leaseRow(claimed, "fence job claim card update", job.ID); err != nil {
+		return err
+	}
+	locked, err := tx.ExecContext(ctx, `UPDATE incidents SET updated_at = updated_at WHERE id = ? AND state IN ('RECEIVED','INVESTIGATING','AWAITING_AUDIT_EVENT')`, job.IncidentID)
+	if err != nil {
+		return err
+	}
+	if err := activeRow(locked, "fence incident card update", job.IncidentID); err != nil {
 		return err
 	}
 	if err := update(incident); err != nil {

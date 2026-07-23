@@ -142,6 +142,45 @@ func TestClaimFenceRejectsStalePendingAuditSchedule(t *testing.T) {
 	assertLiveClaimUnchanged(t, repo, incident.ID, second)
 }
 
+func TestActiveClaimCardFenceRejectsStaleLeaseBeforeCallback(t *testing.T) {
+	repo := newTestRepo(t)
+	ctx := context.Background()
+	incident, _, err := repo.CreateOrGetIncident(ctx, domain.NewIncident("ws", "rule-1", "i-card-fence", time.Unix(100, 0)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.Enqueue(ctx, incident.ID, time.Unix(100, 0)); err != nil {
+		t.Fatal(err)
+	}
+	first, ok, err := repo.ClaimNext(ctx, "worker-a", time.Unix(100, 0))
+	if err != nil || !ok {
+		t.Fatalf("first=%#v ok=%v err=%v", first, ok, err)
+	}
+	second, ok, err := repo.ClaimNext(ctx, "worker-b", time.Unix(401, 0))
+	if err != nil || !ok {
+		t.Fatalf("second=%#v ok=%v err=%v", second, ok, err)
+	}
+
+	claimCards, ok := any(repo).(interface {
+		UpdateActiveClaimCard(context.Context, domain.Job, func(domain.Incident) error) error
+	})
+	if !ok {
+		t.Fatal("repository does not implement UpdateActiveClaimCard")
+	}
+	called := false
+	err = claimCards.UpdateActiveClaimCard(ctx, first, func(domain.Incident) error {
+		called = true
+		return nil
+	})
+	if !errors.Is(err, ErrJobLeaseLost) {
+		t.Fatalf("stale card fence err=%v, want ErrJobLeaseLost", err)
+	}
+	if called {
+		t.Fatal("stale card callback was called")
+	}
+	assertLiveClaimUnchanged(t, repo, incident.ID, second)
+}
+
 func assertLiveClaimUnchanged(t *testing.T, repo *SQLiteRepository, incidentID string, want domain.Job) {
 	t.Helper()
 	incident, err := repo.IncidentByID(context.Background(), incidentID)

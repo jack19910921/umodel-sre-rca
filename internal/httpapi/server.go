@@ -18,7 +18,6 @@ type incidentRepository interface {
 	CreateOrGetIncident(context.Context, domain.Incident) (domain.Incident, bool, error)
 	Enqueue(context.Context, string, time.Time) error
 	Recover(context.Context, string, time.Time) (domain.Incident, bool, error)
-	RecoveredIncidentByKey(context.Context, string, time.Time) (domain.Incident, bool, error)
 }
 
 type RecoveryNotifier interface {
@@ -97,12 +96,7 @@ func registerCloudMonitorIngress(mux *http.ServeMux, callbackToken string, repo 
 				return
 			}
 			if !recovered {
-				incident, recovered, err = repo.RecoveredIncidentByKey(r.Context(), incidentKey, event.Alert.EventAt)
-				if err != nil {
-					writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "read recovered incident"})
-					return
-				}
-				if !recovered {
+				if incident.ID == "" {
 					writeJSON(w, http.StatusAccepted, map[string]any{"accepted": true, "state": "recovery_ignored"})
 					return
 				}

@@ -338,7 +338,65 @@ func TestCloudMonitorDuplicateRecoveryUpdatesLatestRecoveredGenerationOnly(t *te
 	}
 }
 
+func TestCloudMonitorDuplicateRecoveryKeepsRecoverReturnedGeneration(t *testing.T) {
+	first := domain.Incident{
+		ID:              "generation-returned-by-recover",
+		Key:             "ws:rule-1:i-demo",
+		Workspace:       "ws",
+		RuleID:          "rule-1",
+		ResourceID:      "i-demo",
+		State:           domain.IncidentRecovered,
+		FeishuMessageID: "om-first",
+		AlertAt:         time.Unix(10, 0),
+	}
+	repo := &generationChangingRecoveryRepo{
+		recoverIncident: first,
+		fallbackIncident: domain.Incident{
+			ID:              "later-eligible-generation",
+			State:           domain.IncidentRecovered,
+			FeishuMessageID: "om-later",
+		},
+	}
+	notifier := &recordingRecoveryNotifier{}
+	srv := NewGatewayWithNotifier("test-token", "", repo, notifier)
+	body := []byte(`{"type":"ALERT","status":"RECOVERED","workspace":"ws","ruleId":"rule-1","timestamp":20000,"resource":{"entity":{"entity_id":"i-demo"}}}`)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/inbound/cloudmonitor?token=test-token", bytes.NewReader(body)))
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("code=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if repo.fallbackCalls != 0 {
+		t.Fatalf("fallback selector calls=%d want=0", repo.fallbackCalls)
+	}
+	if len(notifier.incidentIDs) != 1 || notifier.incidentIDs[0] != first.ID {
+		t.Fatalf("notified generations=%v want=%s", notifier.incidentIDs, first.ID)
+	}
+}
+
 type failingRecoveryRepo struct{}
+
+type generationChangingRecoveryRepo struct {
+	recoverIncident  domain.Incident
+	fallbackIncident domain.Incident
+	fallbackCalls    int
+}
+
+func (*generationChangingRecoveryRepo) CreateOrGetIncident(context.Context, domain.Incident) (domain.Incident, bool, error) {
+	return domain.Incident{}, false, errors.New("not called")
+}
+
+func (*generationChangingRecoveryRepo) Enqueue(context.Context, string, time.Time) error {
+	return errors.New("not called")
+}
+
+func (r *generationChangingRecoveryRepo) Recover(context.Context, string, time.Time) (domain.Incident, bool, error) {
+	return r.recoverIncident, false, nil
+}
+
+func (r *generationChangingRecoveryRepo) RecoveredIncidentByKey(context.Context, string, time.Time) (domain.Incident, bool, error) {
+	r.fallbackCalls++
+	return r.fallbackIncident, true, nil
+}
 
 func (failingRecoveryRepo) CreateOrGetIncident(context.Context, domain.Incident) (domain.Incident, bool, error) {
 	return domain.Incident{}, false, errors.New("not called")

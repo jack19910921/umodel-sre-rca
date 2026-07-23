@@ -13,10 +13,12 @@ import (
 
 type Repository interface {
 	ClaimNext(context.Context, string, time.Time) (domain.Job, bool, error)
+	CheckActiveClaim(context.Context, domain.Job) error
 	IncidentByID(context.Context, string) (domain.Incident, error)
 	MarkInvestigating(context.Context, string, time.Time) error
 	SetFeishuMessageID(context.Context, string, string, time.Time) error
-	UpdateActiveIncidentCard(context.Context, string, func(domain.Incident) error) error
+	SetFeishuMessageIDForClaim(context.Context, domain.Job, string, time.Time) error
+	UpdateActiveClaimCard(context.Context, domain.Job, func(domain.Incident) error) error
 	StoreEvidence(context.Context, string, []domain.Evidence, time.Time) error
 	Complete(context.Context, string, domain.RCAResult, time.Time) error
 	ScheduleAuditRetry(context.Context, string, time.Time) error
@@ -71,13 +73,19 @@ func (w *Worker) RunOne(ctx context.Context) error {
 		return w.persistenceFailure(ctx, job, err)
 	}
 	if incident.FeishuMessageID == "" {
+		if err := w.repo.CheckActiveClaim(ctx, job); err != nil {
+			if isInactive(err) {
+				return nil
+			}
+			return w.persistenceFailure(ctx, job, err)
+		}
 		messageID, err := w.cards.CreateIncidentCard(ctx, incident)
 		if err != nil {
 			return w.fail(ctx, incident, job, err)
 		}
-		if err := w.repo.SetFeishuMessageID(ctx, incident.ID, messageID, now); err != nil {
+		if err := w.repo.SetFeishuMessageIDForClaim(ctx, job, messageID, now); err != nil {
 			if isInactive(err) {
-				return nil
+				return w.finishRecoveredCardCreate(ctx, incident.ID, messageID, now)
 			}
 			return w.persistenceFailure(ctx, job, err)
 		}
@@ -96,7 +104,7 @@ func (w *Worker) RunOne(ctx context.Context) error {
 		return w.persistenceFailure(ctx, job, err)
 	}
 	incident.State = domain.IncidentInvestigating
-	if err := w.updateCard(ctx, incident, domain.RCAResult{}); err != nil {
+	if err := w.updateCard(ctx, job, incident, domain.RCAResult{}); err != nil {
 		if isInactive(err) {
 			return nil
 		}
@@ -127,7 +135,7 @@ func (w *Worker) RunOne(ctx context.Context) error {
 
 	if result.PendingAudit {
 		incident.State = domain.IncidentAwaitingAuditEvent
-		if err := w.updateCard(ctx, incident, result); err != nil {
+		if err := w.updateCard(ctx, job, incident, result); err != nil {
 			if isInactive(err) {
 				return nil
 			}
@@ -142,7 +150,7 @@ func (w *Worker) RunOne(ctx context.Context) error {
 		return nil
 	}
 	incident.State = domain.IncidentCompleted
-	if err := w.updateCard(ctx, incident, result); err != nil {
+	if err := w.updateCard(ctx, job, incident, result); err != nil {
 		if isInactive(err) {
 			return nil
 		}
@@ -173,7 +181,10 @@ func (w *Worker) collectEvidence(ctx context.Context, incidentID string) ([]doma
 func (w *Worker) fail(ctx context.Context, incident domain.Incident, job domain.Job, cause error) error {
 	if job.Attempt >= 3 && incident.FeishuMessageID != "" {
 		incident.State = domain.IncidentFailed
-		if err := w.updateCard(ctx, incident, domain.RCAResult{Summary: "RCA could not complete; review gateway logs and retry.", NextActions: []string{"Review the gateway error and retry the incident"}}); err != nil && !isInactive(err) {
+		if err := w.updateCard(ctx, job, incident, domain.RCAResult{Summary: "RCA could not complete; review gateway logs and retry.", NextActions: []string{"Review the gateway error and retry the incident"}}); err != nil {
+			if isInactive(err) {
+				return nil
+			}
 			cause = fmt.Errorf("%v; update card: %w", cause, err)
 		}
 	}
@@ -190,10 +201,25 @@ func (w *Worker) fail(ctx context.Context, incident domain.Incident, job domain.
 	return fmt.Errorf("RCA failed: %w", cause)
 }
 
-func (w *Worker) updateCard(ctx context.Context, incident domain.Incident, result domain.RCAResult) error {
-	return w.repo.UpdateActiveIncidentCard(ctx, incident.ID, func(domain.Incident) error {
+func (w *Worker) updateCard(ctx context.Context, job domain.Job, incident domain.Incident, result domain.RCAResult) error {
+	return w.repo.UpdateActiveClaimCard(ctx, job, func(domain.Incident) error {
 		return w.cards.UpdateIncidentCard(ctx, incident.FeishuMessageID, incident, result)
 	})
+}
+
+func (w *Worker) finishRecoveredCardCreate(ctx context.Context, incidentID, messageID string, at time.Time) error {
+	incident, err := w.repo.IncidentByID(ctx, incidentID)
+	if err != nil || incident.State != domain.IncidentRecovered {
+		return nil
+	}
+	if err := w.repo.SetFeishuMessageID(ctx, incidentID, messageID, at); err != nil {
+		return err
+	}
+	incident, err = w.repo.IncidentByID(ctx, incidentID)
+	if err != nil {
+		return err
+	}
+	return w.cards.UpdateIncidentCard(ctx, incident.FeishuMessageID, incident, domain.RCAResult{Summary: "CloudMonitor alert recovered."})
 }
 
 func (w *Worker) persistenceFailure(ctx context.Context, job domain.Job, cause error) error {

@@ -11,9 +11,13 @@ import (
 	"github.com/jack/umodel-sre-rca/internal/store"
 )
 
-type fakeCards struct{ updates int }
+type fakeCards struct {
+	creates int
+	updates int
+}
 
 func (f *fakeCards) CreateIncidentCard(context.Context, domain.Incident) (string, error) {
+	f.creates++
 	return "om-demo", nil
 }
 func (f *fakeCards) UpdateIncidentCard(context.Context, string, domain.Incident, domain.RCAResult) error {
@@ -166,6 +170,78 @@ func TestWorkerRetriesClaimedJobWhenPersistenceFails(t *testing.T) {
 	}
 }
 
+func TestWorkerClaimFenceSuppressesStaleCardUpdates(t *testing.T) {
+	tests := []struct {
+		name        string
+		result      domain.RCAResult
+		reclaimOn   int
+		primeFailed bool
+		wantEvents  []string
+	}{
+		{name: "investigating", result: validResult(), reclaimOn: 1},
+		{name: "completed", result: validResult(), reclaimOn: 2, wantEvents: []string{domain.IncidentInvestigating}},
+		{name: "pending audit", result: domain.RCAResult{Summary: "audit pending", RootCause: "security group", Confidence: 0.5, EvidenceIDs: []string{"ev-context"}, PendingAudit: true}, reclaimOn: 2, wantEvents: []string{domain.IncidentInvestigating}},
+		{name: "failed", result: domain.RCAResult{Summary: "invalid", EvidenceIDs: []string{"unknown"}}, reclaimOn: 2, primeFailed: true, wantEvents: []string{domain.IncidentInvestigating}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			base, err := store.Open(":memory:")
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = base.Close() })
+			incident := enqueueFixtureIncident(t, base)
+			if tt.primeFailed {
+				primeJobAttempt(t, base)
+			}
+			repo := &reclaimBeforeCardRepo{SQLiteRepository: base, reclaimOn: tt.reclaimOn}
+			cards := &recordingCards{}
+			w := New(repo, cards, fakeEvidence{}, fakeRunner{result: tt.result}, "worker-a", func() time.Time { return time.Unix(200, 0) })
+			if err := w.RunOne(context.Background()); err != nil {
+				t.Fatalf("RunOne returned stale-claim error: %v", err)
+			}
+			if got := cards.eventsSnapshot(); !equalStrings(got, tt.wantEvents) {
+				t.Fatalf("card events=%v want=%v", got, tt.wantEvents)
+			}
+			if repo.reclaimed.ID == "" {
+				t.Fatal("worker-b did not reclaim worker-a's expired lease")
+			}
+			got := mustIncidentByID(t, base, incident.ID)
+			if got.State != repo.incidentAtReclaim.State || got.FeishuMessageID != repo.incidentAtReclaim.FeishuMessageID {
+				t.Fatalf("incident changed after reclaim: got=%#v at_reclaim=%#v", got, repo.incidentAtReclaim)
+			}
+			if err := base.CompleteJob(context.Background(), repo.reclaimed); err != nil {
+				t.Fatalf("worker-b claim changed after stale card attempt: %v", err)
+			}
+		})
+	}
+}
+
+func TestWorkerChecksLiveClaimBeforeCreatingCard(t *testing.T) {
+	base, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = base.Close() })
+	incident := enqueueFixtureIncident(t, base)
+	repo := &reclaimBeforeCreateRepo{SQLiteRepository: base}
+	cards := &fakeCards{}
+	w := New(repo, cards, fakeEvidence{}, fakeRunner{result: validResult()}, "worker-a", func() time.Time { return time.Unix(200, 0) })
+	if err := w.RunOne(context.Background()); err != nil {
+		t.Fatalf("RunOne returned stale-claim error: %v", err)
+	}
+	if cards.creates != 0 || cards.updates != 0 {
+		t.Fatalf("stale worker card calls: creates=%d updates=%d", cards.creates, cards.updates)
+	}
+	got := mustIncidentByID(t, base, incident.ID)
+	if got.State != domain.IncidentReceived || got.FeishuMessageID != "" {
+		t.Fatalf("incident changed after reclaim: %#v", got)
+	}
+	if err := base.CompleteJob(context.Background(), repo.reclaimed); err != nil {
+		t.Fatalf("worker-b claim changed after stale create attempt: %v", err)
+	}
+}
+
 func TestWorkerCardFenceLetsRecoveryWin(t *testing.T) {
 	base, err := store.Open(":memory:")
 	if err != nil {
@@ -269,10 +345,96 @@ type blockingMessageIDRepo struct {
 	releaseSet chan struct{}
 }
 
-func (r *blockingMessageIDRepo) SetFeishuMessageID(ctx context.Context, incidentID, messageID string, at time.Time) error {
+type reclaimBeforeCardRepo struct {
+	*store.SQLiteRepository
+	reclaimOn         int
+	updates           int
+	reclaimed         domain.Job
+	incidentAtReclaim domain.Incident
+}
+
+type reclaimBeforeCreateRepo struct {
+	*store.SQLiteRepository
+	reclaimed domain.Job
+}
+
+func (r *reclaimBeforeCreateRepo) CheckActiveClaim(ctx context.Context, job domain.Job) error {
+	reclaimed, ok, err := r.SQLiteRepository.ClaimNext(ctx, "worker-b", time.Unix(501, 0))
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return errors.New("worker-b could not reclaim expired lease")
+	}
+	r.reclaimed = reclaimed
+	return r.SQLiteRepository.CheckActiveClaim(ctx, job)
+}
+
+func (r *reclaimBeforeCardRepo) beforeCard(ctx context.Context) error {
+	r.updates++
+	if r.updates != r.reclaimOn {
+		return nil
+	}
+	job, ok, err := r.SQLiteRepository.ClaimNext(ctx, "worker-b", time.Unix(501, 0))
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return errors.New("worker-b could not reclaim expired lease")
+	}
+	r.reclaimed = job
+	r.incidentAtReclaim, err = r.SQLiteRepository.IncidentByID(ctx, job.IncidentID)
+	return err
+}
+
+func (r *reclaimBeforeCardRepo) UpdateActiveClaimCard(ctx context.Context, job domain.Job, update func(domain.Incident) error) error {
+	if err := r.beforeCard(ctx); err != nil {
+		return err
+	}
+	claimCards, ok := any(r.SQLiteRepository).(interface {
+		UpdateActiveClaimCard(context.Context, domain.Job, func(domain.Incident) error) error
+	})
+	if !ok {
+		return errors.New("repository does not implement UpdateActiveClaimCard")
+	}
+	return claimCards.UpdateActiveClaimCard(ctx, job, update)
+}
+
+func primeJobAttempt(t *testing.T, repo *store.SQLiteRepository) {
+	t.Helper()
+	ctx := context.Background()
+	job, ok, err := repo.ClaimNext(ctx, "primer", time.Unix(101, 0))
+	if err != nil || !ok {
+		t.Fatalf("first prime claim=%#v ok=%v err=%v", job, ok, err)
+	}
+	if _, err := repo.RetryOrFailJob(ctx, job, time.Unix(102, 0), 3); err != nil {
+		t.Fatal(err)
+	}
+	job, ok, err = repo.ClaimNext(ctx, "primer", time.Unix(107, 0))
+	if err != nil || !ok {
+		t.Fatalf("second prime claim=%#v ok=%v err=%v", job, ok, err)
+	}
+	if _, err := repo.RetryOrFailJob(ctx, job, time.Unix(108, 0), 3); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func equalStrings(got, want []string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func (r *blockingMessageIDRepo) SetFeishuMessageIDForClaim(ctx context.Context, job domain.Job, messageID string, at time.Time) error {
 	close(r.setEntered)
 	<-r.releaseSet
-	return r.SQLiteRepository.SetFeishuMessageID(ctx, incidentID, messageID, at)
+	return r.SQLiteRepository.SetFeishuMessageIDForClaim(ctx, job, messageID, at)
 }
 
 type blockingCards struct {
