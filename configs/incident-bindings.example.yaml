@@ -1,0 +1,14 @@
+# One entry per explicitly reviewed CloudMonitor alert target. Values here are
+# the only selectors available to RCA evidence queries; callback payloads do
+# not supply URLs, commands, or cloud query parameters.
+incident_bindings:
+  - workspace: default-cms-your-account-cn-hangzhou
+    rule_id: replace-after-http-probe-rule-created
+    resource_id: replace-after-probe-callback-captured
+    selectors:
+      endpoint_id: blog-http
+      probe_task_id: replace-after-probe-task-created
+      instance_id: i-replace
+      region_id: cn-hangzhou
+      account_id: replace-with-account-id
+      security_group_id: sg-replace

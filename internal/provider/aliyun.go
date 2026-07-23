@@ -35,6 +35,11 @@ func (p *AliyunProvider) Resolve(ctx context.Context, binding evidence.Binding, 
 	if err := validateWindow(window); err != nil {
 		return nil, err
 	}
+	for _, value := range selectors {
+		if err := validateSelectorValue(value); err != nil {
+			return nil, err
+		}
+	}
 	switch binding.QueryTemplate {
 	case "endpoint_context_v1":
 		return p.resolveContext(ctx, binding, selectors, window)
@@ -68,7 +73,14 @@ func (p *AliyunProvider) resolveContext(ctx context.Context, binding evidence.Bi
 func (p *AliyunProvider) resolveMetrics(ctx context.Context, binding evidence.Binding, selectors evidence.Selectors, window evidence.Window) ([]domain.Evidence, error) {
 	instanceID := selectors["instance_id"]
 	probeTaskID := selectors["probe_task_id"]
-	args := []string{"--StartTime", window.Start.UTC().Format(time.RFC3339), "--EndTime", window.End.UTC().Format(time.RFC3339), "--RegionId", p.config.Region}
+	regionID := p.config.Region
+	if selectorRegionID := selectors["region_id"]; selectorRegionID != "" {
+		regionID = selectorRegionID
+	}
+	if err := validateSelectorValue(regionID); err != nil {
+		return nil, err
+	}
+	args := []string{"--StartTime", window.Start.UTC().Format(time.RFC3339), "--EndTime", window.End.UTC().Format(time.RFC3339), "--RegionId", regionID}
 	if instanceID != "" {
 		if err := validateSelectorValue(instanceID); err != nil {
 			return nil, err

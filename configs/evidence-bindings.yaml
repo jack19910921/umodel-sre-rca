@@ -52,4 +52,4 @@ bindings:
     selector_mapping:
       account_id: account_id
       region_id: region_id
-      security_group_id: resource_id
+      security_group_id: security_group_id

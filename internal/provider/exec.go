@@ -1,14 +1,61 @@
 package provider
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
+	"os/exec"
 )
 
 // Executor is intentionally narrower than os/exec: it cannot invoke a shell.
 type Executor interface {
 	Run(context.Context, string, ...string) ([]byte, error)
 }
+
+const maxCommandOutputBytes = 1 << 20
+
+var errCommandOutputTooLarge = errors.New("command stdout exceeds 1 MiB")
+
+// OSExecutor runs a fixed binary with explicit arguments. It intentionally
+// never starts a shell, so bindings cannot introduce command interpolation.
+type OSExecutor struct{}
+
+func (OSExecutor) Run(ctx context.Context, name string, args ...string) ([]byte, error) {
+	var output cappedBuffer
+	command := exec.CommandContext(ctx, name, args...)
+	command.Stdout = &output
+	command.Stderr = &output
+	err := command.Run()
+	if output.exceeded {
+		return output.Bytes(), errCommandOutputTooLarge
+	}
+	if err != nil {
+		return output.Bytes(), err
+	}
+	return output.Bytes(), nil
+}
+
+type cappedBuffer struct {
+	buffer   bytes.Buffer
+	exceeded bool
+}
+
+func (b *cappedBuffer) Write(input []byte) (int, error) {
+	remaining := maxCommandOutputBytes - b.buffer.Len()
+	if remaining <= 0 {
+		b.exceeded = true
+		return 0, errCommandOutputTooLarge
+	}
+	if len(input) > remaining {
+		_, _ = b.buffer.Write(input[:remaining])
+		b.exceeded = true
+		return remaining, errCommandOutputTooLarge
+	}
+	return b.buffer.Write(input)
+}
+
+func (b *cappedBuffer) Bytes() []byte { return b.buffer.Bytes() }
 
 type AliyunRunner struct {
 	profile string

@@ -32,3 +32,14 @@ func TestActionTrailProviderBuildsChangeEvidence(t *testing.T) {
 		t.Fatalf("got=%#v err=%v", got, err)
 	}
 }
+
+func TestAliyunProviderRejectsUnsafeSelectorBeforeCloudRequest(t *testing.T) {
+	provider := NewAliyunProvider(AliyunConfig{Profile: "sre-ecs-role", Workspace: "demo", Region: "cn-hangzhou"}, NewAliyunRunner("sre-ecs-role", fakeExec{}))
+	_, err := provider.Resolve(context.Background(), evidence.Binding{ID: "context", Provider: "aliyun.umodel", QueryTemplate: "endpoint_context_v1"}, evidence.Selectors{
+		"endpoint_id": "blog-http",
+		"account_id":  "unsafe value with spaces",
+	}, evidence.Window{Start: time.Unix(100, 0), End: time.Unix(200, 0)})
+	if err == nil || !strings.Contains(err.Error(), "unsupported") {
+		t.Fatalf("Resolve() error = %v, want selector validation", err)
+	}
+}

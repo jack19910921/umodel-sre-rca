@@ -4,14 +4,21 @@ callback_token: replace-with-a-random-callback-token
 # during staged rollout, then remove it after callback monitoring is stable.
 callback_capture_dir: /var/lib/sre-rca/callback-fixtures
 state_db: /var/lib/sre-rca/state.db
+# Keep worker.enabled false while only the Gateway ingress is deployed. The
+# evidence worker will refuse to start without the reviewed local paths below.
+evidence_bindings_path: /etc/sre-rca/evidence-bindings.yaml
+incident_bindings_path: /etc/sre-rca/incident-bindings.yaml
 aliyun:
   profile: sre-ecs-role
   workspace: default-cms-your-account-cn-hangzhou
   region: cn-hangzhou
+  sls_project: replace-with-sls-project
+  sls_logstore: replace-with-nginx-logstore
 feishu:
   app_id: ${FEISHU_APP_ID}
   app_secret: ${FEISHU_APP_SECRET}
   chat_id: ${FEISHU_CHAT_ID}
 worker:
+  enabled: false
   max_turns: 8
   timeout_seconds: 300
