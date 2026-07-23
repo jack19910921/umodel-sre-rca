@@ -21,6 +21,8 @@ type Repository interface {
 	Complete(context.Context, string, domain.RCAResult, time.Time) error
 	ScheduleAuditRetry(context.Context, string, time.Time) error
 	CompleteJob(context.Context, string) error
+	CompleteJobAndIncident(context.Context, string, string, domain.RCAResult, time.Time) error
+	CompleteJobAndScheduleAuditRetry(context.Context, string, string, time.Time) error
 	RetryOrFailJob(context.Context, domain.Job, time.Time, int) (bool, error)
 }
 
@@ -132,13 +134,7 @@ func (w *Worker) RunOne(ctx context.Context) error {
 			}
 			return w.fail(ctx, incident, job, err)
 		}
-		if err := w.repo.CompleteJob(ctx, job.ID); err != nil {
-			if isInactive(err) {
-				return nil
-			}
-			return w.persistenceFailure(ctx, job, err)
-		}
-		if err := w.repo.ScheduleAuditRetry(ctx, incident.ID, now.Add(w.auditDelay)); err != nil {
+		if err := w.repo.CompleteJobAndScheduleAuditRetry(ctx, job.ID, incident.ID, now.Add(w.auditDelay)); err != nil {
 			if isInactive(err) {
 				return nil
 			}
@@ -153,13 +149,7 @@ func (w *Worker) RunOne(ctx context.Context) error {
 		}
 		return w.fail(ctx, incident, job, err)
 	}
-	if err := w.repo.CompleteJob(ctx, job.ID); err != nil {
-		if isInactive(err) {
-			return nil
-		}
-		return w.persistenceFailure(ctx, job, err)
-	}
-	if err := w.repo.Complete(ctx, incident.ID, result, now); err != nil {
+	if err := w.repo.CompleteJobAndIncident(ctx, job.ID, incident.ID, result, now); err != nil {
 		if isInactive(err) {
 			return nil
 		}

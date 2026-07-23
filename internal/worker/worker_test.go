@@ -93,6 +93,46 @@ func TestWorkerRetriesPendingAuditAfter120Seconds(t *testing.T) {
 	}
 }
 
+func TestWorkerCompletionTransitionSurvivesCrashAfterCurrentJobCompletion(t *testing.T) {
+	base, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = base.Close() })
+	incident := enqueueFixtureIncident(t, base)
+	repo := crashAfterCompleteJobRepo{SQLiteRepository: base}
+	w := New(repo, &fakeCards{}, fakeEvidence{}, fakeRunner{result: validResult()}, "worker-a", func() time.Time { return time.Unix(200, 0) })
+	_ = runWorkerSafely(w)
+	got, err := base.IncidentByID(context.Background(), incident.ID)
+	if err != nil || got.State != domain.IncidentCompleted {
+		t.Fatalf("incident=%#v err=%v", got, err)
+	}
+	if _, ok, err := base.ClaimNext(context.Background(), "worker-b", time.Unix(210, 0)); err != nil || ok {
+		t.Fatalf("ok=%v err=%v", ok, err)
+	}
+}
+
+func TestWorkerAuditTransitionSurvivesCrashAfterCurrentJobCompletion(t *testing.T) {
+	base, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = base.Close() })
+	incident := enqueueFixtureIncident(t, base)
+	repo := crashAfterCompleteJobRepo{SQLiteRepository: base}
+	result := domain.RCAResult{Summary: "audit event pending", RootCause: "security group", Confidence: 0.5, EvidenceIDs: []string{"ev-context"}, PendingAudit: true}
+	w := New(repo, &fakeCards{}, fakeEvidence{}, fakeRunner{result: result}, "worker-a", func() time.Time { return time.Unix(200, 0) })
+	_ = runWorkerSafely(w)
+	got, err := base.IncidentByID(context.Background(), incident.ID)
+	if err != nil || got.State != domain.IncidentAwaitingAuditEvent {
+		t.Fatalf("incident=%#v err=%v", got, err)
+	}
+	job, ok, err := base.ClaimNext(context.Background(), "worker-b", time.Unix(320, 0))
+	if err != nil || !ok || job.IncidentID != incident.ID || job.Attempt != 1 {
+		t.Fatalf("job=%#v ok=%v err=%v", job, ok, err)
+	}
+}
+
 func TestWorkerDoesNotOverwriteRecoveredIncident(t *testing.T) {
 	w, repo, cards := newWorker(t, validResult())
 	incident := enqueueFixtureIncident(t, repo)
@@ -193,6 +233,24 @@ type markInvestigatingFailureRepo struct{ *store.SQLiteRepository }
 
 func (markInvestigatingFailureRepo) MarkInvestigating(context.Context, string, time.Time) error {
 	return errors.New("write unavailable")
+}
+
+type crashAfterCompleteJobRepo struct{ *store.SQLiteRepository }
+
+func (r crashAfterCompleteJobRepo) CompleteJob(ctx context.Context, jobID string) error {
+	if err := r.SQLiteRepository.CompleteJob(ctx, jobID); err != nil {
+		return err
+	}
+	panic("simulated process crash after completing current job")
+}
+
+func runWorkerSafely(w *Worker) (err error) {
+	defer func() {
+		if recover() != nil {
+			err = errors.New("simulated process crash")
+		}
+	}()
+	return w.RunOne(context.Background())
 }
 
 type blockingMessageIDRepo struct {

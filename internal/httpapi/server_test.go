@@ -3,10 +3,12 @@ package httpapi
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strconv"
 	"testing"
 	"time"
 
@@ -174,6 +176,61 @@ func TestCloudMonitorRetriesRecoveryCardForDuplicateCallback(t *testing.T) {
 	}
 }
 
+func TestCloudMonitorOldRecoveryDoesNotCloseNewerGeneration(t *testing.T) {
+	repo := newTestRepo(t)
+	notifier := &flakyRecoveryNotifier{failures: 1}
+	srv := NewGateway("test-token", "", repo, notifier)
+	first, _, err := repo.CreateOrGetIncident(context.Background(), domain.NewIncident("ws", "rule-1", "i-demo", time.Unix(10, 0)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.Enqueue(context.Background(), first.ID, time.Unix(10, 0)); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.SetFeishuMessageID(context.Background(), first.ID, "om-first", time.Unix(11, 0)); err != nil {
+		t.Fatal(err)
+	}
+
+	serve := func(status string, timestamp int64) *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		body := []byte(`{"type":"ALERT","status":"` + status + `","workspace":"ws","ruleId":"rule-1","timestamp":` + strconv.FormatInt(timestamp, 10) + `,"resource":{"entity":{"entity_id":"i-demo"}}}`)
+		srv.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/inbound/cloudmonitor?token=test-token", bytes.NewReader(body)))
+		return rec
+	}
+	if rec := serve("RECOVERED", 20_000); rec.Code != http.StatusInternalServerError {
+		t.Fatalf("first recovery code=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if rec := serve("OCCURRED", 30_000); rec.Code != http.StatusAccepted {
+		t.Fatalf("new occurrence code=%d body=%s", rec.Code, rec.Body.String())
+	} else {
+		var response struct {
+			IncidentID string `json:"incident_id"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil || response.IncidentID == "" {
+			t.Fatalf("new occurrence response=%s err=%v", rec.Body.String(), err)
+		}
+		second, err := repo.IncidentByID(context.Background(), response.IncidentID)
+		if err != nil || second.State != domain.IncidentReceived {
+			t.Fatalf("new generation=%#v err=%v", second, err)
+		}
+		if rec := serve("RECOVERED", 20_000); rec.Code != http.StatusAccepted {
+			t.Fatalf("replayed recovery code=%d body=%s", rec.Code, rec.Body.String())
+		}
+		first, err = repo.IncidentByID(context.Background(), first.ID)
+		if err != nil || first.State != domain.IncidentRecovered {
+			t.Fatalf("first=%#v err=%v", first, err)
+		}
+		second, err = repo.IncidentByID(context.Background(), second.ID)
+		if err != nil || second.State != domain.IncidentReceived {
+			t.Fatalf("second=%#v err=%v", second, err)
+		}
+		job, ok, err := repo.ClaimNext(context.Background(), "worker-b", time.Unix(31, 0))
+		if err != nil || !ok || job.IncidentID != second.ID {
+			t.Fatalf("job=%#v ok=%v err=%v", job, ok, err)
+		}
+	}
+}
+
 type failingRecoveryRepo struct{}
 
 func (failingRecoveryRepo) CreateOrGetIncident(context.Context, domain.Incident) (domain.Incident, bool, error) {
@@ -188,7 +245,7 @@ func (failingRecoveryRepo) Recover(context.Context, string, time.Time) (domain.I
 	return domain.Incident{}, false, errors.New("database unavailable")
 }
 
-func (failingRecoveryRepo) RecoveredIncidentByKey(context.Context, string) (domain.Incident, bool, error) {
+func (failingRecoveryRepo) RecoveredIncidentByKey(context.Context, string, time.Time) (domain.Incident, bool, error) {
 	return domain.Incident{}, false, errors.New("not called")
 }
 
