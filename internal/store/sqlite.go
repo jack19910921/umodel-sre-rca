@@ -6,13 +6,24 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/jack/umodel-sre-rca/internal/domain"
 	_ "modernc.org/sqlite"
 )
 
-type SQLiteRepository struct{ db *sql.DB }
+type SQLiteRepository struct {
+	db                *sql.DB
+	cardFenceTestHook *cardFenceTestHook
+}
+
+// cardFenceTestHook is enabled only by tests that need to observe a recovery
+// contending with an active-card transaction. It is nil in production.
+type cardFenceTestHook struct {
+	mu                 sync.Mutex
+	recoveryContending func()
+}
 
 var (
 	ErrIncidentInactive = errors.New("incident is not active")
@@ -60,6 +71,13 @@ func Open(path string) (*SQLiteRepository, error) {
 }
 
 func (r *SQLiteRepository) Close() error { return r.db.Close() }
+
+// SetRecoveryFenceContentionHookForTest installs a test-only hook that runs
+// after Recover has found the active-card fence locked and before it waits for
+// that fence. Call it before starting concurrent repository operations.
+func (r *SQLiteRepository) SetRecoveryFenceContentionHookForTest(hook func()) {
+	r.cardFenceTestHook = &cardFenceTestHook{recoveryContending: hook}
+}
 
 func (r *SQLiteRepository) migrate(ctx context.Context) error {
 	statements := []string{
@@ -165,6 +183,10 @@ func (r *SQLiteRepository) SetFeishuMessageID(ctx context.Context, incidentID, m
 }
 
 func (r *SQLiteRepository) UpdateActiveIncidentCard(ctx context.Context, incidentID string, update func(domain.Incident) error) error {
+	if hook := r.cardFenceTestHook; hook != nil {
+		hook.mu.Lock()
+		defer hook.mu.Unlock()
+	}
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -290,6 +312,13 @@ func (r *SQLiteRepository) ScheduleAuditRetry(ctx context.Context, incidentID st
 }
 
 func (r *SQLiteRepository) Recover(ctx context.Context, incidentKey string, at time.Time) (domain.Incident, bool, error) {
+	if hook := r.cardFenceTestHook; hook != nil {
+		if !hook.mu.TryLock() {
+			hook.recoveryContending()
+			hook.mu.Lock()
+		}
+		defer hook.mu.Unlock()
+	}
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return domain.Incident{}, false, err

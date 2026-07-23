@@ -175,6 +175,8 @@ func TestWorkerCardFenceLetsRecoveryWin(t *testing.T) {
 	incident := enqueueFixtureIncident(t, base)
 	cards := newBlockingCards()
 	w := New(base, cards, fakeEvidence{}, fakeRunner{result: validResult()}, "worker-a", func() time.Time { return time.Unix(200, 0) })
+	recoveryContending := make(chan struct{})
+	base.SetRecoveryFenceContentionHookForTest(func() { close(recoveryContending) })
 	done := make(chan error, 1)
 	go func() { done <- w.RunOne(context.Background()) }()
 	<-cards.workerUpdateStarted
@@ -187,6 +189,7 @@ func TestWorkerCardFenceLetsRecoveryWin(t *testing.T) {
 		}
 		recovered <- err
 	}()
+	<-recoveryContending
 	close(cards.releaseWorkerUpdate)
 	if err := <-recovered; err != nil {
 		t.Fatal(err)
