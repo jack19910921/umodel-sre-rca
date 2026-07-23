@@ -16,6 +16,7 @@ type Repository interface {
 	IncidentByID(context.Context, string) (domain.Incident, error)
 	MarkInvestigating(context.Context, string, time.Time) error
 	SetFeishuMessageID(context.Context, string, string, time.Time) error
+	UpdateActiveIncidentCard(context.Context, string, func(domain.Incident) error) error
 	StoreEvidence(context.Context, string, []domain.Evidence, time.Time) error
 	Complete(context.Context, string, domain.RCAResult, time.Time) error
 	ScheduleAuditRetry(context.Context, string, time.Time) error
@@ -66,7 +67,7 @@ func (w *Worker) RunOne(ctx context.Context) error {
 	}
 	incident, err := w.repo.IncidentByID(ctx, job.IncidentID)
 	if err != nil {
-		return err
+		return w.persistenceFailure(ctx, job, err)
 	}
 	if incident.FeishuMessageID == "" {
 		messageID, err := w.cards.CreateIncidentCard(ctx, incident)
@@ -77,18 +78,27 @@ func (w *Worker) RunOne(ctx context.Context) error {
 			if isInactive(err) {
 				return nil
 			}
-			return err
+			return w.persistenceFailure(ctx, job, err)
 		}
-		incident.FeishuMessageID = messageID
+		incident, err = w.repo.IncidentByID(ctx, incident.ID)
+		if err != nil {
+			return w.persistenceFailure(ctx, job, err)
+		}
+		if incident.State == domain.IncidentRecovered {
+			return w.cards.UpdateIncidentCard(ctx, incident.FeishuMessageID, incident, domain.RCAResult{Summary: "CloudMonitor alert recovered."})
+		}
 	}
 	if err := w.repo.MarkInvestigating(ctx, incident.ID, now); err != nil {
 		if isInactive(err) {
 			return nil
 		}
-		return err
+		return w.persistenceFailure(ctx, job, err)
 	}
 	incident.State = domain.IncidentInvestigating
-	if err := w.cards.UpdateIncidentCard(ctx, incident.FeishuMessageID, incident, domain.RCAResult{}); err != nil {
+	if err := w.updateCard(ctx, incident, domain.RCAResult{}); err != nil {
+		if isInactive(err) {
+			return nil
+		}
 		return w.fail(ctx, incident, job, err)
 	}
 
@@ -97,7 +107,10 @@ func (w *Worker) RunOne(ctx context.Context) error {
 		return w.fail(ctx, incident, job, err)
 	}
 	if err := w.repo.StoreEvidence(ctx, incident.ID, evidenceItems, now); err != nil {
-		return w.fail(ctx, incident, job, err)
+		if isInactive(err) {
+			return nil
+		}
+		return w.persistenceFailure(ctx, job, err)
 	}
 	result, err := w.runner.Run(ctx, incident.ID)
 	if err != nil {
@@ -113,38 +126,44 @@ func (w *Worker) RunOne(ctx context.Context) error {
 
 	if result.PendingAudit {
 		incident.State = domain.IncidentAwaitingAuditEvent
-		if err := w.cards.UpdateIncidentCard(ctx, incident.FeishuMessageID, incident, result); err != nil {
-			return w.fail(ctx, incident, job, err)
-		}
-		if err := w.repo.ScheduleAuditRetry(ctx, incident.ID, now.Add(w.auditDelay)); err != nil {
+		if err := w.updateCard(ctx, incident, result); err != nil {
 			if isInactive(err) {
 				return nil
 			}
-			return err
+			return w.fail(ctx, incident, job, err)
 		}
 		if err := w.repo.CompleteJob(ctx, job.ID); err != nil {
 			if isInactive(err) {
 				return nil
 			}
-			return err
+			return w.persistenceFailure(ctx, job, err)
+		}
+		if err := w.repo.ScheduleAuditRetry(ctx, incident.ID, now.Add(w.auditDelay)); err != nil {
+			if isInactive(err) {
+				return nil
+			}
+			return w.persistenceFailure(ctx, job, err)
 		}
 		return nil
 	}
-	if err := w.cards.UpdateIncidentCard(ctx, incident.FeishuMessageID, incident, result); err != nil {
+	incident.State = domain.IncidentCompleted
+	if err := w.updateCard(ctx, incident, result); err != nil {
+		if isInactive(err) {
+			return nil
+		}
 		return w.fail(ctx, incident, job, err)
+	}
+	if err := w.repo.CompleteJob(ctx, job.ID); err != nil {
+		if isInactive(err) {
+			return nil
+		}
+		return w.persistenceFailure(ctx, job, err)
 	}
 	if err := w.repo.Complete(ctx, incident.ID, result, now); err != nil {
 		if isInactive(err) {
 			return nil
 		}
-		return err
-	}
-	incident.State = domain.IncidentCompleted
-	if err := w.repo.CompleteJob(ctx, job.ID); err != nil {
-		if isInactive(err) {
-			return nil
-		}
-		return err
+		return w.persistenceFailure(ctx, job, err)
 	}
 	return nil
 }
@@ -163,6 +182,12 @@ func (w *Worker) collectEvidence(ctx context.Context, incidentID string) ([]doma
 }
 
 func (w *Worker) fail(ctx context.Context, incident domain.Incident, job domain.Job, cause error) error {
+	if job.Attempt >= 3 && incident.FeishuMessageID != "" {
+		incident.State = domain.IncidentFailed
+		if err := w.updateCard(ctx, incident, domain.RCAResult{Summary: "RCA could not complete; review gateway logs and retry.", NextActions: []string{"Review the gateway error and retry the incident"}}); err != nil && !isInactive(err) {
+			cause = fmt.Errorf("%v; update card: %w", cause, err)
+		}
+	}
 	failed, err := w.repo.RetryOrFailJob(ctx, job, w.now().UTC(), 3)
 	if isInactive(err) {
 		return nil
@@ -173,11 +198,26 @@ func (w *Worker) fail(ctx context.Context, incident domain.Incident, job domain.
 	if !failed {
 		return fmt.Errorf("RCA failed: %w", cause)
 	}
-	incident.State = domain.IncidentFailed
-	if updateErr := w.cards.UpdateIncidentCard(ctx, incident.FeishuMessageID, incident, domain.RCAResult{Summary: "RCA could not complete; review gateway logs and retry.", NextActions: []string{"Review the gateway error and retry the incident"}}); updateErr != nil {
-		return fmt.Errorf("RCA failed: %v; update card: %w", cause, updateErr)
-	}
 	return fmt.Errorf("RCA failed: %w", cause)
+}
+
+func (w *Worker) updateCard(ctx context.Context, incident domain.Incident, result domain.RCAResult) error {
+	return w.repo.UpdateActiveIncidentCard(ctx, incident.ID, func(domain.Incident) error {
+		return w.cards.UpdateIncidentCard(ctx, incident.FeishuMessageID, incident, result)
+	})
+}
+
+func (w *Worker) persistenceFailure(ctx context.Context, job domain.Job, cause error) error {
+	if isInactive(cause) {
+		return nil
+	}
+	if _, err := w.repo.RetryOrFailJob(ctx, job, w.now().UTC(), 3); err != nil {
+		if isInactive(err) {
+			return nil
+		}
+		return fmt.Errorf("persist RCA retry after %v: %w", cause, err)
+	}
+	return fmt.Errorf("persist RCA: %w", cause)
 }
 
 func isInactive(err error) bool { return errors.Is(err, store.ErrIncidentInactive) }

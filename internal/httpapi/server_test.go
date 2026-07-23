@@ -137,6 +137,43 @@ func TestCloudMonitorRecoveryReturnsFailureForPersistenceError(t *testing.T) {
 	}
 }
 
+func TestCloudMonitorRetriesRecoveryCardForDuplicateCallback(t *testing.T) {
+	repo := newTestRepo(t)
+	notifier := &flakyRecoveryNotifier{failures: 2}
+	srv := NewGateway("test-token", "", repo, notifier)
+	incident, _, err := repo.CreateOrGetIncident(context.Background(), domain.NewIncident("ws", "rule-1", "i-demo", time.Unix(100, 0)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.Enqueue(context.Background(), incident.ID, time.Unix(101, 0)); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.SetFeishuMessageID(context.Background(), incident.ID, "om-demo", time.Unix(101, 0)); err != nil {
+		t.Fatal(err)
+	}
+	body := []byte(`{
+		"type":"ALERT", "status":"RECOVERED", "workspace":"ws", "ruleId":"rule-1",
+		"time":"2026-07-22T15:14:40Z", "resource":{"entity":{"entity_id":"i-demo"}}
+	}`)
+	for attempt, want := range []int{http.StatusInternalServerError, http.StatusInternalServerError, http.StatusAccepted} {
+		rec := httptest.NewRecorder()
+		srv.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/inbound/cloudmonitor?token=test-token", bytes.NewReader(body)))
+		if rec.Code != want {
+			t.Fatalf("attempt=%d code=%d want=%d body=%s", attempt+1, rec.Code, want, rec.Body.String())
+		}
+	}
+	if notifier.updates != 3 {
+		t.Fatalf("updates=%d", notifier.updates)
+	}
+	got, err := repo.IncidentByID(context.Background(), incident.ID)
+	if err != nil || got.State != domain.IncidentRecovered {
+		t.Fatalf("incident=%#v err=%v", got, err)
+	}
+	if _, ok, err := repo.ClaimNext(context.Background(), "worker-a", time.Now().UTC()); err != nil || ok {
+		t.Fatalf("duplicate recovery created a runnable job: ok=%v err=%v", ok, err)
+	}
+}
+
 type failingRecoveryRepo struct{}
 
 func (failingRecoveryRepo) CreateOrGetIncident(context.Context, domain.Incident) (domain.Incident, bool, error) {
@@ -151,10 +188,28 @@ func (failingRecoveryRepo) Recover(context.Context, string, time.Time) (domain.I
 	return domain.Incident{}, false, errors.New("database unavailable")
 }
 
+func (failingRecoveryRepo) RecoveredIncidentByKey(context.Context, string) (domain.Incident, bool, error) {
+	return domain.Incident{}, false, errors.New("not called")
+}
+
 type fakeRecoveryNotifier struct{ updates int }
 
 func (f *fakeRecoveryNotifier) UpdateIncidentCard(context.Context, string, domain.Incident, domain.RCAResult) error {
 	f.updates++
+	return nil
+}
+
+type flakyRecoveryNotifier struct {
+	updates  int
+	failures int
+}
+
+func (f *flakyRecoveryNotifier) UpdateIncidentCard(context.Context, string, domain.Incident, domain.RCAResult) error {
+	f.updates++
+	if f.failures > 0 {
+		f.failures--
+		return errors.New("notifier unavailable")
+	}
 	return nil
 }
 

@@ -49,6 +49,7 @@ type Job struct {
 	WorkerID   string
 	Attempt    int
 	RunAfter   time.Time
+	LeaseUntil time.Time
 }
 
 type Evidence struct {

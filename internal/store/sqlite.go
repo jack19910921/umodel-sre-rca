@@ -16,15 +16,19 @@ type SQLiteRepository struct{ db *sql.DB }
 
 var ErrIncidentInactive = errors.New("incident is not active")
 
+const JobLeaseDuration = 5 * time.Minute
+
 // Repository is the persistence boundary used by inbound handlers and workers.
 // It deliberately exposes domain operations instead of raw SQL state updates.
 type Repository interface {
 	CreateOrGetIncident(context.Context, domain.Incident) (domain.Incident, bool, error)
 	IncidentByID(context.Context, string) (domain.Incident, error)
+	RecoveredIncidentByKey(context.Context, string) (domain.Incident, bool, error)
 	Enqueue(context.Context, string, time.Time) error
 	ClaimNext(context.Context, string, time.Time) (domain.Job, bool, error)
 	MarkInvestigating(context.Context, string, time.Time) error
 	SetFeishuMessageID(context.Context, string, string, time.Time) error
+	UpdateActiveIncidentCard(context.Context, string, func(domain.Incident) error) error
 	StoreEvidence(context.Context, string, []domain.Evidence, time.Time) error
 	OpenEvidence(context.Context, string) (domain.Evidence, error)
 	Complete(context.Context, string, domain.RCAResult, time.Time) error
@@ -56,13 +60,40 @@ func (r *SQLiteRepository) migrate(ctx context.Context) error {
 	statements := []string{
 		`CREATE TABLE IF NOT EXISTS incidents (id TEXT PRIMARY KEY, incident_key TEXT NOT NULL, workspace TEXT NOT NULL, rule_id TEXT NOT NULL, resource_id TEXT NOT NULL, state TEXT NOT NULL, feishu_message_id TEXT NOT NULL DEFAULT '', alert_at INTEGER NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS incidents_active_key ON incidents(incident_key) WHERE state IN ('RECEIVED','INVESTIGATING','AWAITING_AUDIT_EVENT')`,
-		`CREATE TABLE IF NOT EXISTS jobs (id TEXT PRIMARY KEY, incident_id TEXT NOT NULL, status TEXT NOT NULL, worker_id TEXT NOT NULL DEFAULT '', attempt INTEGER NOT NULL DEFAULT 0, run_after INTEGER NOT NULL)`,
+		`CREATE TABLE IF NOT EXISTS jobs (id TEXT PRIMARY KEY, incident_id TEXT NOT NULL, status TEXT NOT NULL, worker_id TEXT NOT NULL DEFAULT '', attempt INTEGER NOT NULL DEFAULT 0, run_after INTEGER NOT NULL, lease_until INTEGER NOT NULL DEFAULT 0)`,
 		`CREATE INDEX IF NOT EXISTS jobs_claimable ON jobs(status, run_after)`,
 		`CREATE TABLE IF NOT EXISTS evidence_snapshots (id TEXT PRIMARY KEY, incident_id TEXT NOT NULL, evidence_json TEXT NOT NULL, created_at INTEGER NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS evidence_records (id TEXT PRIMARY KEY, incident_id TEXT NOT NULL, evidence_json TEXT NOT NULL, created_at INTEGER NOT NULL)`,
 	}
 	for _, statement := range statements {
 		if _, err := r.db.ExecContext(ctx, statement); err != nil {
+			return err
+		}
+	}
+	var hasLeaseUntil bool
+	rows, err := r.db.QueryContext(ctx, `PRAGMA table_info(jobs)`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid int
+		var name, columnType string
+		var notNull int
+		var defaultValue any
+		var primaryKey int
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			return err
+		}
+		if name == "lease_until" {
+			hasLeaseUntil = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if !hasLeaseUntil {
+		if _, err := r.db.ExecContext(ctx, `ALTER TABLE jobs ADD COLUMN lease_until INTEGER NOT NULL DEFAULT 0`); err != nil {
 			return err
 		}
 	}
@@ -88,6 +119,18 @@ func (r *SQLiteRepository) Enqueue(ctx context.Context, incidentID string, runAf
 	return err
 }
 
+func (r *SQLiteRepository) RecoveredIncidentByKey(ctx context.Context, incidentKey string) (domain.Incident, bool, error) {
+	row := r.db.QueryRowContext(ctx, `SELECT id, incident_key, workspace, rule_id, resource_id, state, feishu_message_id, alert_at, created_at, updated_at FROM incidents WHERE incident_key = ? AND state = ? ORDER BY updated_at DESC, id DESC LIMIT 1`, incidentKey, domain.IncidentRecovered)
+	incident, err := scanIncident(row)
+	if err == sql.ErrNoRows {
+		return domain.Incident{}, false, nil
+	}
+	if err != nil {
+		return domain.Incident{}, false, err
+	}
+	return incident, true, nil
+}
+
 func (r *SQLiteRepository) IncidentByID(ctx context.Context, id string) (domain.Incident, error) {
 	row := r.db.QueryRowContext(ctx, `SELECT id, incident_key, workspace, rule_id, resource_id, state, feishu_message_id, alert_at, created_at, updated_at FROM incidents WHERE id = ?`, id)
 	in, err := scanIncident(row)
@@ -109,11 +152,38 @@ func (r *SQLiteRepository) SetFeishuMessageID(ctx context.Context, incidentID, m
 	if messageID == "" {
 		return fmt.Errorf("Feishu message id is required")
 	}
-	result, err := r.db.ExecContext(ctx, `UPDATE incidents SET feishu_message_id = ?, updated_at = ? WHERE id = ? AND state IN ('RECEIVED','INVESTIGATING','AWAITING_AUDIT_EVENT')`, messageID, at.Unix(), incidentID)
+	result, err := r.db.ExecContext(ctx, `UPDATE incidents SET feishu_message_id = ?, updated_at = ? WHERE id = ? AND feishu_message_id = ''`, messageID, at.Unix(), incidentID)
 	if err != nil {
 		return err
 	}
-	return activeRow(result, "set Feishu message id", incidentID)
+	return oneRow(result, "set Feishu message id", incidentID)
+}
+
+func (r *SQLiteRepository) UpdateActiveIncidentCard(ctx context.Context, incidentID string, update func(domain.Incident) error) error {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	row := tx.QueryRowContext(ctx, `SELECT id, incident_key, workspace, rule_id, resource_id, state, feishu_message_id, alert_at, created_at, updated_at FROM incidents WHERE id = ? AND state IN ('RECEIVED','INVESTIGATING','AWAITING_AUDIT_EVENT')`, incidentID)
+	incident, err := scanIncident(row)
+	if err == sql.ErrNoRows {
+		return ErrIncidentInactive
+	}
+	if err != nil {
+		return err
+	}
+	locked, err := tx.ExecContext(ctx, `UPDATE incidents SET updated_at = updated_at WHERE id = ? AND state IN ('RECEIVED','INVESTIGATING','AWAITING_AUDIT_EVENT')`, incidentID)
+	if err != nil {
+		return err
+	}
+	if err := activeRow(locked, "fence incident card update", incidentID); err != nil {
+		return err
+	}
+	if err := update(incident); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (r *SQLiteRepository) StoreEvidence(ctx context.Context, incidentID string, evidence []domain.Evidence, at time.Time) error {
@@ -169,15 +239,29 @@ func (r *SQLiteRepository) Complete(ctx context.Context, incidentID string, resu
 	if _, err := tx.ExecContext(ctx, `INSERT INTO evidence_snapshots (id, incident_id, evidence_json, created_at) VALUES (?, ?, ?, ?)`, domainSnapshotID(), incidentID, string(raw), at.Unix()); err != nil {
 		return err
 	}
+	if _, err := tx.ExecContext(ctx, `UPDATE jobs SET status = ?, worker_id = '', lease_until = 0 WHERE incident_id = ? AND status IN (?, ?)`, domain.JobCancelled, incidentID, domain.JobQueued, domain.JobRunning); err != nil {
+		return err
+	}
 	return tx.Commit()
 }
 
 func (r *SQLiteRepository) Fail(ctx context.Context, incidentID string, at time.Time) error {
-	result, err := r.db.ExecContext(ctx, `UPDATE incidents SET state = ?, updated_at = ? WHERE id = ? AND state IN ('RECEIVED','INVESTIGATING','AWAITING_AUDIT_EVENT')`, domain.IncidentFailed, at.Unix(), incidentID)
+	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
-	return activeRow(result, "fail incident", incidentID)
+	defer tx.Rollback()
+	result, err := tx.ExecContext(ctx, `UPDATE incidents SET state = ?, updated_at = ? WHERE id = ? AND state IN ('RECEIVED','INVESTIGATING','AWAITING_AUDIT_EVENT')`, domain.IncidentFailed, at.Unix(), incidentID)
+	if err != nil {
+		return err
+	}
+	if err := activeRow(result, "fail incident", incidentID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE jobs SET status = ?, worker_id = '', lease_until = 0 WHERE incident_id = ? AND status IN (?, ?)`, domain.JobCancelled, incidentID, domain.JobQueued, domain.JobRunning); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (r *SQLiteRepository) ScheduleAuditRetry(ctx context.Context, incidentID string, retryAt time.Time) error {
@@ -221,7 +305,7 @@ func (r *SQLiteRepository) Recover(ctx context.Context, incidentKey string, at t
 	if err := oneRow(updated, "recover incident", incidentKey); err != nil {
 		return domain.Incident{}, false, err
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE jobs SET status = ? WHERE incident_id = ? AND status IN (?, ?)`, domain.JobCancelled, incident.ID, domain.JobQueued, domain.JobRunning); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE jobs SET status = ?, worker_id = '', lease_until = 0 WHERE incident_id = ? AND status IN (?, ?)`, domain.JobCancelled, incident.ID, domain.JobQueued, domain.JobRunning); err != nil {
 		return domain.Incident{}, false, err
 	}
 	if err := tx.Commit(); err != nil {
@@ -233,7 +317,7 @@ func (r *SQLiteRepository) Recover(ctx context.Context, incidentKey string, at t
 }
 
 func (r *SQLiteRepository) CancelJobsForIncident(ctx context.Context, incidentID string) error {
-	_, err := r.db.ExecContext(ctx, `UPDATE jobs SET status = ? WHERE incident_id = ? AND status IN (?, ?)`, domain.JobCancelled, incidentID, domain.JobQueued, domain.JobRunning)
+	_, err := r.db.ExecContext(ctx, `UPDATE jobs SET status = ?, worker_id = '', lease_until = 0 WHERE incident_id = ? AND status IN (?, ?)`, domain.JobCancelled, incidentID, domain.JobQueued, domain.JobRunning)
 	return err
 }
 
@@ -243,7 +327,7 @@ func (r *SQLiteRepository) ClaimNext(ctx context.Context, workerID string, now t
 		return domain.Job{}, false, err
 	}
 	defer tx.Rollback()
-	row := tx.QueryRowContext(ctx, `SELECT id, incident_id, status, worker_id, attempt, run_after FROM jobs WHERE status = ? AND run_after <= ? ORDER BY run_after, id LIMIT 1`, domain.JobQueued, now.Unix())
+	row := tx.QueryRowContext(ctx, `SELECT jobs.id, jobs.incident_id, jobs.status, jobs.worker_id, jobs.attempt, jobs.run_after, jobs.lease_until FROM jobs JOIN incidents ON incidents.id = jobs.incident_id WHERE incidents.state IN ('RECEIVED','INVESTIGATING','AWAITING_AUDIT_EVENT') AND ((jobs.status = ? AND jobs.run_after <= ?) OR (jobs.status = ? AND jobs.lease_until <= ?)) ORDER BY jobs.run_after, jobs.id LIMIT 1`, domain.JobQueued, now.Unix(), domain.JobRunning, now.Unix())
 	job, err := scanJob(row)
 	if err == sql.ErrNoRows {
 		return domain.Job{}, false, tx.Commit()
@@ -251,7 +335,8 @@ func (r *SQLiteRepository) ClaimNext(ctx context.Context, workerID string, now t
 	if err != nil {
 		return domain.Job{}, false, err
 	}
-	result, err := tx.ExecContext(ctx, `UPDATE jobs SET status = ?, worker_id = ?, attempt = attempt + 1 WHERE id = ? AND status = ?`, domain.JobRunning, workerID, job.ID, domain.JobQueued)
+	leaseUntil := now.Add(JobLeaseDuration).Unix()
+	result, err := tx.ExecContext(ctx, `UPDATE jobs SET status = ?, worker_id = ?, attempt = attempt + 1, lease_until = ? WHERE id = ? AND ((status = ? AND run_after <= ?) OR (status = ? AND lease_until <= ?)) AND EXISTS (SELECT 1 FROM incidents WHERE incidents.id = jobs.incident_id AND state IN ('RECEIVED','INVESTIGATING','AWAITING_AUDIT_EVENT'))`, domain.JobRunning, workerID, leaseUntil, job.ID, domain.JobQueued, now.Unix(), domain.JobRunning, now.Unix())
 	if err != nil {
 		return domain.Job{}, false, err
 	}
@@ -259,12 +344,12 @@ func (r *SQLiteRepository) ClaimNext(ctx context.Context, workerID string, now t
 	if err != nil || changed != 1 {
 		return domain.Job{}, false, err
 	}
-	job.Status, job.WorkerID, job.Attempt = domain.JobRunning, workerID, job.Attempt+1
+	job.Status, job.WorkerID, job.Attempt, job.LeaseUntil = domain.JobRunning, workerID, job.Attempt+1, now.Add(JobLeaseDuration).UTC()
 	return job, true, tx.Commit()
 }
 
 func (r *SQLiteRepository) CompleteJob(ctx context.Context, jobID string) error {
-	result, err := r.db.ExecContext(ctx, `UPDATE jobs SET status = ? WHERE id = ? AND status = ? AND EXISTS (SELECT 1 FROM incidents WHERE incidents.id = jobs.incident_id AND state IN ('RECEIVED','INVESTIGATING','AWAITING_AUDIT_EVENT','COMPLETED'))`, domain.JobCompleted, jobID, domain.JobRunning)
+	result, err := r.db.ExecContext(ctx, `UPDATE jobs SET status = ?, worker_id = '', lease_until = 0 WHERE id = ? AND status = ? AND EXISTS (SELECT 1 FROM incidents WHERE incidents.id = jobs.incident_id AND state IN ('RECEIVED','INVESTIGATING','AWAITING_AUDIT_EVENT'))`, domain.JobCompleted, jobID, domain.JobRunning)
 	if err != nil {
 		return err
 	}
@@ -288,7 +373,10 @@ func (r *SQLiteRepository) RetryOrFailJob(ctx context.Context, job domain.Job, a
 		if err := activeRow(updated, "fail incident", job.IncidentID); err != nil {
 			return false, err
 		}
-		jobUpdate, err := tx.ExecContext(ctx, `UPDATE jobs SET status = ? WHERE id = ? AND status = ?`, domain.JobFailed, job.ID, domain.JobRunning)
+		if _, err := tx.ExecContext(ctx, `UPDATE jobs SET status = ?, worker_id = '', lease_until = 0 WHERE incident_id = ? AND id <> ? AND status IN (?, ?)`, domain.JobCancelled, job.IncidentID, job.ID, domain.JobQueued, domain.JobRunning); err != nil {
+			return false, err
+		}
+		jobUpdate, err := tx.ExecContext(ctx, `UPDATE jobs SET status = ?, worker_id = '', lease_until = 0 WHERE id = ? AND status IN (?, ?)`, domain.JobFailed, job.ID, domain.JobRunning, domain.JobCompleted)
 		if err != nil {
 			return false, err
 		}
@@ -301,7 +389,7 @@ func (r *SQLiteRepository) RetryOrFailJob(ctx context.Context, job domain.Job, a
 	if delay > 30*time.Second {
 		delay = 30 * time.Second
 	}
-	updated, err := tx.ExecContext(ctx, `UPDATE jobs SET status = ?, worker_id = '', run_after = ? WHERE id = ? AND status = ? AND EXISTS (SELECT 1 FROM incidents WHERE incidents.id = jobs.incident_id AND state IN ('RECEIVED','INVESTIGATING','AWAITING_AUDIT_EVENT'))`, domain.JobQueued, at.Add(delay).Unix(), job.ID, domain.JobRunning)
+	updated, err := tx.ExecContext(ctx, `UPDATE jobs SET status = ?, worker_id = '', lease_until = 0, run_after = ? WHERE id = ? AND status IN (?, ?) AND EXISTS (SELECT 1 FROM incidents WHERE incidents.id = jobs.incident_id AND state IN ('RECEIVED','INVESTIGATING','AWAITING_AUDIT_EVENT'))`, domain.JobQueued, at.Add(delay).Unix(), job.ID, domain.JobRunning, domain.JobCompleted)
 	if err != nil {
 		return false, err
 	}
@@ -321,9 +409,9 @@ func scanIncident(row interface{ Scan(...any) error }) (domain.Incident, error) 
 
 func scanJob(row interface{ Scan(...any) error }) (domain.Job, error) {
 	var job domain.Job
-	var runAfter int64
-	err := row.Scan(&job.ID, &job.IncidentID, &job.Status, &job.WorkerID, &job.Attempt, &runAfter)
-	job.RunAfter = time.Unix(runAfter, 0).UTC()
+	var runAfter, leaseUntil int64
+	err := row.Scan(&job.ID, &job.IncidentID, &job.Status, &job.WorkerID, &job.Attempt, &runAfter, &leaseUntil)
+	job.RunAfter, job.LeaseUntil = time.Unix(runAfter, 0).UTC(), time.Unix(leaseUntil, 0).UTC()
 	return job, err
 }
 

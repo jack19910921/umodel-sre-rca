@@ -50,6 +50,33 @@ func TestClaimNextClaimsQueuedJobOnce(t *testing.T) {
 	}
 }
 
+func TestClaimNextReclaimsExpiredLeaseButNotRecoveredCancelledJob(t *testing.T) {
+	repo := newTestRepo(t)
+	ctx := context.Background()
+	incident, _, err := repo.CreateOrGetIncident(ctx, domain.NewIncident("ws", "rule-1", "i-expired", time.Unix(100, 0)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.Enqueue(ctx, incident.ID, time.Unix(101, 0)); err != nil {
+		t.Fatal(err)
+	}
+	first, ok, err := repo.ClaimNext(ctx, "worker-a", time.Unix(102, 0))
+	if err != nil || !ok {
+		t.Fatalf("first=%#v ok=%v err=%v", first, ok, err)
+	}
+	reclaimed, ok, err := repo.ClaimNext(ctx, "worker-b", time.Unix(403, 0))
+	if err != nil || !ok || reclaimed.ID != first.ID || reclaimed.WorkerID != "worker-b" || reclaimed.Attempt != 2 {
+		t.Fatalf("reclaimed=%#v ok=%v err=%v", reclaimed, ok, err)
+	}
+
+	if _, recovered, err := repo.Recover(ctx, incident.Key, time.Unix(404, 0)); err != nil || !recovered {
+		t.Fatalf("recovered=%v err=%v", recovered, err)
+	}
+	if _, ok, err := repo.ClaimNext(ctx, "worker-c", time.Unix(1000, 0)); err != nil || ok {
+		t.Fatalf("cancelled recovered job was reclaimed: ok=%v err=%v", ok, err)
+	}
+}
+
 func TestCompletePersistsResultAndClosesIncident(t *testing.T) {
 	repo := newTestRepo(t)
 	incident, _, err := repo.CreateOrGetIncident(context.Background(), domain.NewIncident("ws", "rule-1", "i-demo", time.Unix(100, 0)))

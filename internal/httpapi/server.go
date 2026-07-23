@@ -18,6 +18,7 @@ type incidentRepository interface {
 	CreateOrGetIncident(context.Context, domain.Incident) (domain.Incident, bool, error)
 	Enqueue(context.Context, string, time.Time) error
 	Recover(context.Context, string, time.Time) (domain.Incident, bool, error)
+	RecoveredIncidentByKey(context.Context, string) (domain.Incident, bool, error)
 }
 
 type RecoveryNotifier interface {
@@ -87,14 +88,22 @@ func registerCloudMonitorIngress(mux *http.ServeMux, callbackToken string, repo 
 			return
 		}
 		if event.Transition == inbound.AlertRecovered {
-			incident, recovered, err := repo.Recover(r.Context(), domain.NewIncident(event.Alert.Workspace, event.Alert.RuleID, event.Alert.ResourceID, event.Alert.EventAt).Key, event.Alert.EventAt)
+			incidentKey := domain.NewIncident(event.Alert.Workspace, event.Alert.RuleID, event.Alert.ResourceID, event.Alert.EventAt).Key
+			incident, recovered, err := repo.Recover(r.Context(), incidentKey, event.Alert.EventAt)
 			if err != nil {
 				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "persist recovery"})
 				return
 			}
 			if !recovered {
-				writeJSON(w, http.StatusAccepted, map[string]any{"accepted": true, "state": "recovery_ignored"})
-				return
+				incident, recovered, err = repo.RecoveredIncidentByKey(r.Context(), incidentKey)
+				if err != nil {
+					writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "read recovered incident"})
+					return
+				}
+				if !recovered {
+					writeJSON(w, http.StatusAccepted, map[string]any{"accepted": true, "state": "recovery_ignored"})
+					return
+				}
 			}
 			if incident.FeishuMessageID != "" && notifier != nil {
 				if err := notifier.UpdateIncidentCard(r.Context(), incident.FeishuMessageID, incident, domain.RCAResult{Summary: "CloudMonitor alert recovered."}); err != nil {
