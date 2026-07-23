@@ -2,6 +2,7 @@ package cc
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"os"
@@ -14,7 +15,7 @@ import (
 	"time"
 )
 
-func TestRunnerBuildsFixedCommandWithoutBash(t *testing.T) {
+func TestRunnerBuildsToolFreeFixedCommandWithMinimalEnvironment(t *testing.T) {
 	runner := Runner{}
 	cmd, _, cancel, err := runner.prepareClaudeCommand(context.Background(), "inc-1", fixedCollections())
 	if err != nil {
@@ -28,14 +29,64 @@ func TestRunnerBuildsFixedCommandWithoutBash(t *testing.T) {
 		t.Fatalf("dir=%q want=%q", cmd.Dir, defaultWorkingDir)
 	}
 	args := strings.Join(cmd.Args, " ")
-	if strings.Contains(args, "allowedTools") || strings.Contains(args, "Bash(") {
+	if !containsArgumentPair(cmd.Args, "--tools", "") || !containsArgument(cmd.Args, "--no-session-persistence") {
+		t.Fatalf("Claude command must disable tools and session persistence: %q", cmd.Args)
+	}
+	if strings.Contains(args, "allowedTools") || strings.Contains(args, "Bash(") || strings.Contains(strings.ToLower(args), "mcp") {
 		t.Fatalf("unsafe command args=%q", cmd.Args)
+	}
+	if got, want := cmd.Env, minimalChildEnvironment(); !equalStrings(got, want) {
+		t.Fatalf("Claude env=%q want=%q", got, want)
 	}
 	for _, form := range fixedEvidenceForms {
 		if !strings.Contains(args, strings.Join(form, " ")) {
 			t.Fatalf("missing fixed evidence form %q in prompt=%q", form, args)
 		}
 	}
+}
+
+func TestRunnerGivesFixedEvidenceChildrenTheMinimalEnvironment(t *testing.T) {
+	runner := Runner{}
+	cmd, err := runner.prepareEvidenceCommand(context.Background(), []string{"incident", "context"}, "inc-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cmd.Path != defaultEvidenceCLIPath {
+		t.Fatalf("path=%q want=%q", cmd.Path, defaultEvidenceCLIPath)
+	}
+	if got, want := cmd.Env, minimalChildEnvironment(); !equalStrings(got, want) {
+		t.Fatalf("evidence env=%q want=%q", got, want)
+	}
+}
+
+func containsArgument(args []string, expected string) bool {
+	for _, arg := range args {
+		if arg == expected {
+			return true
+		}
+	}
+	return false
+}
+
+func containsArgumentPair(args []string, first, second string) bool {
+	for index := 0; index+1 < len(args); index++ {
+		if args[index] == first && args[index+1] == second {
+			return true
+		}
+	}
+	return false
+}
+
+func equalStrings(got, want []string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for index := range got {
+		if got[index] != want[index] {
+			return false
+		}
+	}
+	return true
 }
 
 func TestRunnerProductionCommandCannotBeRedirected(t *testing.T) {
@@ -141,9 +192,7 @@ func helperCommandFactory(mode, pidFile string) commandFactory {
 		if name != defaultClaudeBinary {
 			return exec.CommandContext(ctx, "/bin/echo", `{"evidence":[{"id":"ev-context","type":"context","observed_at":"2026-01-01T00:00:00Z","source":"test","query_ref":"test","summary":"safe","raw_ref":""}]}`)
 		}
-		command := exec.CommandContext(ctx, os.Args[0], "-test.run=TestRunnerHelperProcess")
-		command.Env = append(os.Environ(), "GO_WANT_RCA_HELPER=1", "RCA_HELPER_MODE="+mode, "RCA_HELPER_PID_FILE="+pidFile)
-		return command
+		return exec.CommandContext(ctx, os.Args[0], "-test.run=TestRunnerHelperProcess/"+mode+"/"+base64.RawURLEncoding.EncodeToString([]byte(pidFile)))
 	}
 }
 
@@ -156,10 +205,10 @@ func fixedCollections() []evidenceCollection {
 }
 
 func TestRunnerHelperProcess(t *testing.T) {
-	if os.Getenv("GO_WANT_RCA_HELPER") != "1" {
+	mode, pidFile, ok := helperMode(os.Args)
+	if !ok {
 		return
 	}
-	mode := os.Getenv("RCA_HELPER_MODE")
 	switch mode {
 	case "valid-with-stderr":
 		_, _ = os.Stderr.WriteString("benign diagnostics\n")
@@ -169,12 +218,10 @@ func TestRunnerHelperProcess(t *testing.T) {
 		_, _ = os.Stderr.WriteString("SECRET_STDERR")
 		os.Exit(1)
 	case "spawn-child":
-		pidFile := os.Getenv("RCA_HELPER_PID_FILE")
 		if pidFile == "" {
 			os.Exit(2)
 		}
-		child := exec.Command(os.Args[0], "-test.run=TestRunnerHelperProcess")
-		child.Env = append(os.Environ(), "GO_WANT_RCA_HELPER=1", "RCA_HELPER_MODE=block")
+		child := exec.Command(os.Args[0], "-test.run=TestRunnerHelperProcess/block/")
 		if err := child.Start(); err != nil {
 			os.Exit(3)
 		}
@@ -192,4 +239,23 @@ func TestRunnerHelperProcess(t *testing.T) {
 		os.Exit(5)
 	}
 	os.Exit(0)
+}
+
+func helperMode(args []string) (string, string, bool) {
+	const prefix = "-test.run=TestRunnerHelperProcess/"
+	for _, arg := range args {
+		if !strings.HasPrefix(arg, prefix) {
+			continue
+		}
+		parts := strings.SplitN(strings.TrimPrefix(arg, prefix), "/", 2)
+		if len(parts) != 2 || parts[0] == "" {
+			return "", "", false
+		}
+		pidFile, err := base64.RawURLEncoding.DecodeString(parts[1])
+		if err != nil {
+			return "", "", false
+		}
+		return parts[0], string(pidFile), true
+	}
+	return "", "", false
 }

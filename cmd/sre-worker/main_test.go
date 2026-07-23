@@ -6,7 +6,17 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/jack/umodel-sre-rca/internal/config"
 )
+
+func TestValidateWorkerConfigRejectsMissingFeishuDeliveryConfig(t *testing.T) {
+	cfg := config.Config{}
+	cfg.Worker.Enabled = true
+	if err := validateWorkerConfig(cfg); err == nil {
+		t.Fatal("validateWorkerConfig() error = nil, want missing Feishu delivery config")
+	}
+}
 
 func TestRunLoopGivesEveryWorkerCallABoundedContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())

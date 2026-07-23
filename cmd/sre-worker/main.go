@@ -44,6 +44,9 @@ func run(configPath string) error {
 	if !cfg.Worker.Enabled {
 		return fmt.Errorf("worker.enabled must be true to run sre-worker")
 	}
+	if err := validateWorkerConfig(cfg); err != nil {
+		return err
+	}
 	repo, err := store.Open(cfg.StateDB)
 	if err != nil {
 		return fmt.Errorf("open worker state DB: %w", err)
@@ -67,6 +70,13 @@ func run(configPath string) error {
 	log.Printf("sre-worker started: poll_seconds=%d timeout_seconds=%d", cfg.Worker.PollSeconds, cfg.Worker.TimeoutSeconds)
 	runLoop(ctx, configuredWorker, time.Duration(cfg.Worker.PollSeconds)*time.Second, time.Duration(cfg.Worker.TimeoutSeconds)*time.Second, nil, log.Printf)
 	log.Print("sre-worker stopped")
+	return nil
+}
+
+func validateWorkerConfig(cfg config.Config) error {
+	if cfg.Feishu.AppID == "" || cfg.Feishu.AppSecret == "" || cfg.Feishu.ChatID == "" {
+		return fmt.Errorf("worker.enabled requires feishu app_id, app_secret, and chat_id")
+	}
 	return nil
 }
 

@@ -8,6 +8,8 @@ Type=simple
 User=sre-rca
 Group=sre-rca
 WorkingDirectory=/opt/sre-rca/runtime
+Environment=HOME=/var/lib/sre-rca
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 EnvironmentFile=/etc/sre-rca/sre.env
 ExecStart=/opt/sre-rca/bin/sre-worker -config /etc/sre-rca/sre.yaml
 Restart=on-failure

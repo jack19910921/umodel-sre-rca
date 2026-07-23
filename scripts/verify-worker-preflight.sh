@@ -36,18 +36,31 @@ if [[ ! -r /etc/sre-rca/sre.env ]]; then
 fi
 
 umask 077
-work_dir="$(mktemp -d)"
+work_dir="$(mktemp -d /var/lib/sre-rca/sre-preflight.XXXXXX)"
 trap 'rm -rf "${work_dir}"' EXIT
 claude_output="${work_dir}/claude.json"
 evidence_output="${work_dir}/evidence.json"
 sts_output="${work_dir}/sts.json"
 
-set -a
-. /etc/sre-rca/sre.env
-set +a
-runuser --preserve-environment -u sre-rca -- /usr/bin/claude -p 'Return exactly {"ok":true}' --output-format json --max-turns 1 >"${claude_output}"
-runuser --preserve-environment -u sre-rca -- /opt/sre-rca/bin/sre-evidence incident context "${incident_id}" >"${evidence_output}"
-runuser --preserve-environment -u sre-rca -- aliyun sts GetCallerIdentity --profile sre-ecs-role >"${sts_output}"
+child_path="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+child_home="/var/lib/sre-rca"
+
+run_as_service_account() {
+  runuser -u sre-rca -- env -i "PATH=${child_path}" "HOME=${child_home}" "$@"
+}
+
+if ! run_as_service_account /usr/bin/claude -p 'Return exactly {"ok":true}' --output-format json --max-turns 1 --tools "" --no-session-persistence >"${claude_output}" 2>"${work_dir}/claude.stderr"; then
+  echo "Claude Code preflight invocation failed" >&2
+  exit 1
+fi
+if ! run_as_service_account /opt/sre-rca/bin/sre-evidence incident context "${incident_id}" >"${evidence_output}" 2>"${work_dir}/evidence.stderr"; then
+  echo "fixed evidence CLI preflight invocation failed" >&2
+  exit 1
+fi
+if ! run_as_service_account aliyun sts GetCallerIdentity --profile sre-ecs-role >"${sts_output}" 2>"${work_dir}/sts.stderr"; then
+  echo "Alibaba STS preflight invocation failed" >&2
+  exit 1
+fi
 
 python3 - "${claude_output}" "${evidence_output}" "${sts_output}" <<'PY'
 import json

@@ -40,6 +40,8 @@ const (
 	defaultClaudeBinary     = "/usr/bin/claude"
 	defaultEvidenceCLIPath  = "/opt/sre-rca/bin/sre-evidence"
 	defaultWorkingDir       = "/opt/sre-rca/runtime"
+	childHome               = "/var/lib/sre-rca"
+	childPath               = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 	defaultTimeout          = 5 * time.Minute
 	defaultMaxOutputBytes   = 64 << 10
 	processGroupWaitTimeout = time.Second
@@ -98,9 +100,10 @@ func (r Runner) collectEvidence(ctx context.Context, incidentID string) ([]evide
 	for _, form := range fixedEvidenceForms {
 		stdout := newBoundedBuffer(r.outputLimit())
 		stderr := newBoundedBuffer(r.outputLimit())
-		command := r.newCommand(ctx, defaultEvidenceCLIPath, append(append([]string{}, form...), incidentID)...)
-		configureProcessGroup(command)
-		command.Dir = r.runtimeWorkingDir()
+		command, err := r.prepareEvidenceCommand(ctx, form, incidentID)
+		if err != nil {
+			return nil, err
+		}
 		command.Stdout = stdout
 		command.Stderr = stderr
 		if err := command.Run(); err != nil {
@@ -120,6 +123,18 @@ func (r Runner) collectEvidence(ctx context.Context, incidentID string) ([]evide
 	return collections, nil
 }
 
+func (r Runner) prepareEvidenceCommand(ctx context.Context, form []string, incidentID string) (*exec.Cmd, error) {
+	if !isSafeIncidentID(incidentID) {
+		return nil, fmt.Errorf("incident id is required and must be a safe reference")
+	}
+	if !isFixedEvidenceForm(form) {
+		return nil, fmt.Errorf("evidence form is not allowed")
+	}
+	command := r.newCommand(ctx, defaultEvidenceCLIPath, append(append([]string{}, form...), incidentID)...)
+	r.configureChildCommand(command)
+	return command, nil
+}
+
 func (r Runner) prepareClaudeCommand(ctx context.Context, incidentID string, collections []evidenceCollection) (*exec.Cmd, context.Context, context.CancelFunc, error) {
 	if !isSafeIncidentID(incidentID) {
 		return nil, nil, nil, fmt.Errorf("incident id is required and must be a safe reference")
@@ -133,10 +148,43 @@ func (r Runner) prepareClaudeCommand(ctx context.Context, incidentID string, col
 		"-p", prompt,
 		"--output-format", "json",
 		"--max-turns", strconv.Itoa(r.maxTurns()),
+		"--tools", "",
+		"--no-session-persistence",
 	)
+	r.configureChildCommand(command)
+	return command, runCtx, cancel, nil
+}
+
+func (r Runner) configureChildCommand(command *exec.Cmd) {
 	configureProcessGroup(command)
 	command.Dir = r.runtimeWorkingDir()
-	return command, runCtx, cancel, nil
+	command.Env = minimalChildEnvironment()
+}
+
+func minimalChildEnvironment() []string {
+	return []string{
+		"HOME=" + childHome,
+		"PATH=" + childPath,
+	}
+}
+
+func isFixedEvidenceForm(form []string) bool {
+	for _, candidate := range fixedEvidenceForms {
+		if len(form) != len(candidate) {
+			continue
+		}
+		matched := true
+		for index := range form {
+			if form[index] != candidate[index] {
+				matched = false
+				break
+			}
+		}
+		if matched {
+			return true
+		}
+	}
+	return false
 }
 
 func buildPrompt(incidentID string, collections []evidenceCollection) (string, error) {

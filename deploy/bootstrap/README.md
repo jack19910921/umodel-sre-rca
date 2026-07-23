@@ -11,6 +11,13 @@ separately; only install and enable `deploy/worker/sre-worker.service` after
 reviewed incident bindings, RAM/SLS/ActionTrail, Feishu, and the preflight all
 succeed.
 
+The source ingress template keeps `worker.enabled: false`. For worker
+preflight, copy it to the intended `/etc/sre-rca/sre.yaml` runtime config and
+set `worker.enabled: true`, then fill every reviewed binding and credential
+placeholder. That edit alone is non-mutating: it neither enables nor starts a
+systemd service. Do not run `systemctl enable` or `systemctl start` until the
+preflight succeeds.
+
 Upload `sre-rca-capture-linux-amd64.tar.gz` to `/root` through Workbench, then
 run the commands provided in the deployment guide. The installer refuses to
 overwrite an existing `sre-rca-capture` Nginx site and tests Nginx before reload.

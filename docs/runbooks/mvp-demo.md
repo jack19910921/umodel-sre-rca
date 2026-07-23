@@ -119,10 +119,15 @@ following are true:
 2. The ECS RAM role can read the required UModel, CloudMonitor, SLS, and
    ActionTrail evidence sources.
 3. Logtail has delivered Nginx logs to the selected SLS Logstore.
-4. Feishu app credentials and chat ID are present only in `/etc/sre-rca/sre.env`.
-5. `scripts/verify-worker-preflight.sh` succeeds as root with
+4. Copy the ingress-only template into the intended `/etc/sre-rca/sre.yaml`
+   worker runtime config, set `worker.enabled: true`, and fill every reviewed
+   binding plus Feishu and cloud credential placeholder. This configuration
+   edit does not start a process.
+5. Feishu app credentials and chat ID are present only in `/etc/sre-rca/sre.env`.
+6. `scripts/verify-worker-preflight.sh` succeeds as root with
    `SRE_RCA_PREFLIGHT_INCIDENT_ID` set. The script checks the fixed Claude,
-   evidence CLI, and STS forms as `sre-rca`; it deliberately does not enable a
+   evidence CLI, and STS forms as `sre-rca` with `HOME=/var/lib/sre-rca` and a
+   clean child environment. It deliberately does not enable or start a
    service.
 
 Only after those checks pass may the customer install

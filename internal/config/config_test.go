@@ -7,10 +7,28 @@ import (
 	"testing"
 )
 
-func TestLoadRejectsMissingCallbackToken(t *testing.T) {
-	_, err := Load("../../testdata/invalid-config.yaml")
-	if err == nil || !strings.Contains(err.Error(), "callback_token") {
-		t.Fatalf("Load() error = %v, want callback_token validation", err)
+func TestLoadAllowsGatewayOrEvidenceConfigWithoutCallbackOrFeishuSecrets(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte(`
+state_db: /tmp/state.db
+evidence_bindings_path: /tmp/evidence-bindings.yaml
+incident_bindings_path: /tmp/incident-bindings.yaml
+aliyun:
+  profile: sre-ecs-role
+  workspace: workspace
+  region: cn-hangzhou
+  sls_project: project
+  sls_logstore: logstore
+worker:
+  enabled: true
+  max_turns: 8
+  timeout_seconds: 300
+  poll_seconds: 15
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path); err != nil {
+		t.Fatalf("Load() error = %v, want child-safe config load", err)
 	}
 }
 
@@ -67,33 +85,6 @@ worker:
 	_, err := Load(path)
 	if err == nil || !strings.Contains(err.Error(), "poll_seconds") {
 		t.Fatalf("Load() error = %v, want poll_seconds validation", err)
-	}
-}
-
-func TestLoadRejectsEnabledWorkerWithoutFeishuDeliveryConfig(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "config.yaml")
-	if err := os.WriteFile(path, []byte(`
-callback_token: test-token
-state_db: /tmp/state.db
-evidence_bindings_path: /tmp/evidence-bindings.yaml
-incident_bindings_path: /tmp/incident-bindings.yaml
-aliyun:
-  profile: sre-ecs-role
-  workspace: workspace
-  region: cn-hangzhou
-  sls_project: project
-  sls_logstore: logstore
-worker:
-  enabled: true
-  max_turns: 8
-  timeout_seconds: 300
-  poll_seconds: 15
-`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	_, err := Load(path)
-	if err == nil || !strings.Contains(err.Error(), "feishu") {
-		t.Fatalf("Load() error = %v, want Feishu validation", err)
 	}
 }
 

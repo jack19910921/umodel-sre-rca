@@ -2,6 +2,7 @@ package main
 
 import (
 	"flag"
+	"fmt"
 	"log"
 	"net/http"
 
@@ -17,6 +18,9 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	if err := validateGatewayConfig(cfg); err != nil {
+		log.Fatal(err)
+	}
 	repo, err := store.Open(cfg.StateDB)
 	if err != nil {
 		log.Fatal(err)
@@ -24,4 +28,11 @@ func main() {
 	defer repo.Close()
 	log.Printf("sre-gateway listening on %s", cfg.ListenAddr)
 	log.Fatal(http.ListenAndServe(cfg.ListenAddr, httpapi.NewGateway(cfg.CallbackToken, cfg.CallbackCaptureDir, repo)))
+}
+
+func validateGatewayConfig(cfg config.Config) error {
+	if cfg.CallbackToken == "" {
+		return fmt.Errorf("callback_token is required")
+	}
+	return nil
 }

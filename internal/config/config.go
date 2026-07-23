@@ -45,9 +45,6 @@ func Load(path string) (Config, error) {
 	if err := yaml.Unmarshal([]byte(os.ExpandEnv(string(raw))), &cfg); err != nil {
 		return cfg, err
 	}
-	if cfg.CallbackToken == "" {
-		return cfg, errors.New("callback_token is required")
-	}
 	if cfg.StateDB == "" || cfg.Worker.MaxTurns < 1 {
 		return cfg, errors.New("state_db and worker.max_turns are required")
 	}
@@ -57,9 +54,6 @@ func Load(path string) (Config, error) {
 		}
 		if cfg.Worker.PollSeconds < 1 {
 			return cfg, errors.New("worker.enabled requires worker.poll_seconds greater than zero")
-		}
-		if cfg.Feishu.AppID == "" || cfg.Feishu.AppSecret == "" || cfg.Feishu.ChatID == "" {
-			return cfg, errors.New("worker.enabled requires feishu app_id, app_secret, and chat_id")
 		}
 	}
 	if cfg.ListenAddr == "" {
