@@ -2,7 +2,7 @@ listen_addr: 127.0.0.1:8080
 callback_token: test-token
 state_db: /var/lib/sre-rca/state.db
 aliyun:
-  profile: sre-ecs-role
+  ecs_ram_role_name: sre-rca
   workspace: default-cms-demo
   region: cn-hangzhou
 worker:

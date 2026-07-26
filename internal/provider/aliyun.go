@@ -15,20 +15,20 @@ import (
 )
 
 type AliyunConfig struct {
-	Profile     string
-	Workspace   string
-	Region      string
-	SLSProject  string
-	SLSLogstore string
+	Workspace      string
+	Region         string
+	ECSRAMRoleName string
+	SLSProject     string
+	SLSLogstore    string
 }
 
 type AliyunProvider struct {
 	config AliyunConfig
-	runner *AliyunRunner
+	cloud  AliyunAPI
 }
 
-func NewAliyunProvider(config AliyunConfig, runner *AliyunRunner) *AliyunProvider {
-	return &AliyunProvider{config: config, runner: runner}
+func NewAliyunProvider(config AliyunConfig, cloud AliyunAPI) *AliyunProvider {
+	return &AliyunProvider{config: config, cloud: cloud}
 }
 
 func (p *AliyunProvider) Resolve(ctx context.Context, binding evidence.Binding, selectors evidence.Selectors, window evidence.Window) ([]domain.Evidence, error) {
@@ -63,7 +63,12 @@ func (p *AliyunProvider) resolveContext(ctx context.Context, binding evidence.Bi
 		return nil, fmt.Errorf("aliyun workspace is required for UModel context")
 	}
 	query := ".entity with(domain='sre', type='sre.service_endpoint') | where endpoint_id = '" + endpointID + "' | limit 0, 1"
-	raw, err := p.runner.Run(ctx, "cms", "GetEntityStoreData", []string{"--workspace", p.config.Workspace, "--from", fmt.Sprint(window.Start.Unix()), "--to", fmt.Sprint(window.End.Unix()), "--query", query})
+	raw, err := p.cloud.Call(ctx, AliyunRequest{Service: "cms", Operation: "GetEntityStoreData", Query: map[string]string{
+		"Workspace": p.config.Workspace,
+		"From":      fmt.Sprint(window.Start.Unix()),
+		"To":        fmt.Sprint(window.End.Unix()),
+		"Query":     query,
+	}})
 	if err != nil {
 		return nil, err
 	}
@@ -80,21 +85,21 @@ func (p *AliyunProvider) resolveMetrics(ctx context.Context, binding evidence.Bi
 	if err := validateSelectorValue(regionID); err != nil {
 		return nil, err
 	}
-	args := []string{"--StartTime", window.Start.UTC().Format(time.RFC3339), "--EndTime", window.End.UTC().Format(time.RFC3339), "--RegionId", regionID}
+	query := map[string]string{"StartTime": window.Start.UTC().Format(time.RFC3339), "EndTime": window.End.UTC().Format(time.RFC3339), "RegionId": regionID}
 	if instanceID != "" {
 		if err := validateSelectorValue(instanceID); err != nil {
 			return nil, err
 		}
-		args = append(args, "--Dimensions", "[{\"instanceId\":\""+instanceID+"\"}]")
+		query["Dimensions"] = "[{\"instanceId\":\"" + instanceID + "\"}]"
 	} else if probeTaskID != "" {
 		if err := validateSelectorValue(probeTaskID); err != nil {
 			return nil, err
 		}
-		args = append(args, "--Dimensions", "[{\"taskId\":\""+probeTaskID+"\"}]")
+		query["Dimensions"] = "[{\"taskId\":\"" + probeTaskID + "\"}]"
 	} else {
 		return nil, fmt.Errorf("metrics binding requires instance_id or probe_task_id")
 	}
-	raw, err := p.runner.Run(ctx, "cms", "DescribeMetricList", args)
+	raw, err := p.cloud.Call(ctx, AliyunRequest{Service: "cms", Operation: "DescribeMetricList", Query: query})
 	if err != nil {
 		return nil, err
 	}
@@ -110,7 +115,15 @@ func (p *AliyunProvider) resolveLogs(ctx context.Context, binding evidence.Bindi
 		return nil, fmt.Errorf("SLS project and logstore are required for Nginx logs")
 	}
 	query := "endpoint_id:" + endpointID
-	raw, err := p.runner.Run(ctx, "sls", "GetLogs", []string{"--project", p.config.SLSProject, "--logstore", p.config.SLSLogstore, "--from", fmt.Sprint(window.Start.Unix()), "--to", fmt.Sprint(window.End.Unix()), "--query", query})
+	raw, err := p.cloud.Call(ctx, AliyunRequest{Service: "sls", Operation: "GetLogsV2", Query: map[string]string{
+		"project":  p.config.SLSProject,
+		"logstore": p.config.SLSLogstore,
+	}, Body: map[string]any{
+		"from":  int32(window.Start.Unix()),
+		"to":    int32(window.End.Unix()),
+		"query": query,
+		"line":  int64(100),
+	}})
 	if err != nil {
 		return nil, err
 	}
@@ -122,7 +135,13 @@ func (p *AliyunProvider) resolveChanges(ctx context.Context, binding evidence.Bi
 	if err != nil {
 		return nil, err
 	}
-	raw, err := p.runner.Run(ctx, "actiontrail", "LookupEvents", []string{"--ResourceName", securityGroupID, "--EventRW", "Write", "--StartTime", window.Start.UTC().Format(time.RFC3339), "--EndTime", window.End.UTC().Format(time.RFC3339), "--MaxResults", "50"})
+	raw, err := p.cloud.Call(ctx, AliyunRequest{Service: "actiontrail", Operation: "LookupEvents", Query: map[string]string{
+		"ResourceName": securityGroupID,
+		"EventRW":      "Write",
+		"StartTime":    window.Start.UTC().Format(time.RFC3339),
+		"EndTime":      window.End.UTC().Format(time.RFC3339),
+		"MaxResults":   "50",
+	}})
 	if err != nil {
 		return nil, err
 	}

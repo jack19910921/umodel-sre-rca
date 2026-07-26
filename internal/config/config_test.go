@@ -14,7 +14,7 @@ state_db: /tmp/state.db
 evidence_bindings_path: /tmp/evidence-bindings.yaml
 incident_bindings_path: /tmp/incident-bindings.yaml
 aliyun:
-  profile: sre-ecs-role
+  ecs_ram_role_name: sre-rca
   workspace: workspace
   region: cn-hangzhou
   sls_project: project
@@ -32,13 +32,37 @@ worker:
 	}
 }
 
-func TestLoadAcceptsEcsRAMRoleProfile(t *testing.T) {
+func TestLoadAcceptsECSRAMRoleRuntimeConfig(t *testing.T) {
 	cfg, err := Load("../../testdata/valid-config.yaml")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Aliyun.Profile != "sre-ecs-role" || cfg.Worker.MaxTurns != 8 {
+	if cfg.Aliyun.ECSRAMRoleName != "sre-rca" || cfg.Worker.MaxTurns != 8 {
 		t.Fatalf("unexpected config: %#v", cfg)
+	}
+}
+
+func TestLoadWorkerDoesNotRequireAliyunCLIProfile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte(`
+state_db: /var/lib/sre-rca/state.db
+aliyun:
+  workspace: workspace
+  region: cn-hangzhou
+  sls_project: project
+  sls_logstore: logstore
+evidence_bindings_path: /etc/sre-rca/evidence-bindings.yaml
+incident_bindings_path: /etc/sre-rca/incident-bindings.yaml
+worker:
+  enabled: true
+  max_turns: 8
+  poll_seconds: 30
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := Load(path); err != nil {
+		t.Fatalf("Load() error = %v, want ECS RAM Role runtime without an aliyun CLI profile", err)
 	}
 }
 
@@ -48,7 +72,7 @@ func TestLoadRejectsEnabledWorkerWithoutCompositionPaths(t *testing.T) {
 callback_token: test-token
 state_db: /tmp/state.db
 aliyun:
-  profile: sre-ecs-role
+  ecs_ram_role_name: sre-rca
 worker:
   enabled: true
   max_turns: 8
@@ -69,7 +93,7 @@ state_db: /tmp/state.db
 evidence_bindings_path: /tmp/evidence-bindings.yaml
 incident_bindings_path: /tmp/incident-bindings.yaml
 aliyun:
-  profile: sre-ecs-role
+  ecs_ram_role_name: sre-rca
   workspace: workspace
   region: cn-hangzhou
   sls_project: project

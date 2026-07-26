@@ -9,7 +9,9 @@ state_db: /var/lib/sre-rca/state.db
 evidence_bindings_path: /etc/sre-rca/evidence-bindings.yaml
 incident_bindings_path: /etc/sre-rca/incident-bindings.yaml
 aliyun:
-  profile: sre-ecs-role
+  # Optional: leave empty to discover the role from ECS instance metadata.
+  # Set it when the attached RAM role name is known to avoid an extra metadata lookup.
+  ecs_ram_role_name: sre-rca
   workspace: default-cms-your-account-cn-hangzhou
   region: cn-hangzhou
   sls_project: replace-with-sls-project

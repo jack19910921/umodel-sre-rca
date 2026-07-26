@@ -17,11 +17,11 @@ type Config struct {
 	EvidenceBindingsPath string `yaml:"evidence_bindings_path"`
 	IncidentBindingsPath string `yaml:"incident_bindings_path"`
 	Aliyun               struct {
-		Profile     string `yaml:"profile"`
-		Workspace   string `yaml:"workspace"`
-		Region      string `yaml:"region"`
-		SLSProject  string `yaml:"sls_project"`
-		SLSLogstore string `yaml:"sls_logstore"`
+		Workspace      string `yaml:"workspace"`
+		Region         string `yaml:"region"`
+		ECSRAMRoleName string `yaml:"ecs_ram_role_name"`
+		SLSProject     string `yaml:"sls_project"`
+		SLSLogstore    string `yaml:"sls_logstore"`
 	} `yaml:"aliyun"`
 	Feishu struct {
 		AppID     string `yaml:"app_id"`
@@ -49,8 +49,8 @@ func Load(path string) (Config, error) {
 		return cfg, errors.New("state_db and worker.max_turns are required")
 	}
 	if cfg.Worker.Enabled {
-		if cfg.Aliyun.Profile == "" || cfg.Aliyun.Workspace == "" || cfg.Aliyun.Region == "" || cfg.Aliyun.SLSProject == "" || cfg.Aliyun.SLSLogstore == "" || cfg.EvidenceBindingsPath == "" || cfg.IncidentBindingsPath == "" {
-			return cfg, errors.New("worker.enabled requires aliyun profile, workspace, region, SLS project/logstore, evidence_bindings_path, and incident_bindings_path")
+		if cfg.Aliyun.Workspace == "" || cfg.Aliyun.Region == "" || cfg.Aliyun.SLSProject == "" || cfg.Aliyun.SLSLogstore == "" || cfg.EvidenceBindingsPath == "" || cfg.IncidentBindingsPath == "" {
+			return cfg, errors.New("worker.enabled requires aliyun workspace, region, SLS project/logstore, evidence_bindings_path, and incident_bindings_path")
 		}
 		if cfg.Worker.PollSeconds < 1 {
 			return cfg, errors.New("worker.enabled requires worker.poll_seconds greater than zero")

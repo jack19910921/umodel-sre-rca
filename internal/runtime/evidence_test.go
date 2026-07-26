@@ -9,6 +9,7 @@ import (
 
 	"github.com/jack/umodel-sre-rca/internal/config"
 	"github.com/jack/umodel-sre-rca/internal/domain"
+	"github.com/jack/umodel-sre-rca/internal/provider"
 )
 
 type fakeEvidenceRepository struct{ fakeIncidentRepository }
@@ -17,7 +18,13 @@ func (fakeEvidenceRepository) OpenEvidence(context.Context, string) (domain.Evid
 	return domain.Evidence{}, nil
 }
 
-func TestNewEvidenceServiceComposesReviewedAliyunProviders(t *testing.T) {
+type fakeRuntimeCloud struct{}
+
+func (fakeRuntimeCloud) Call(context.Context, provider.AliyunRequest) ([]byte, error) {
+	return []byte(`{"RequestId":"req","Events":[]}`), nil
+}
+
+func TestNewEvidenceServiceComposesReviewedSDKProviders(t *testing.T) {
 	dir := t.TempDir()
 	writeRuntimeFixture(t, filepath.Join(dir, "bindings.yaml"), `
 bindings:
@@ -65,19 +72,9 @@ incident_bindings:
       account_id: '123456789'
       security_group_id: sg-demo
 `)
-	binDir := filepath.Join(dir, "bin")
-	if err := os.Mkdir(binDir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	writeRuntimeFixture(t, filepath.Join(binDir, "aliyun"), "#!/bin/sh\nprintf '%s\\n' '{\"RequestId\":\"req\",\"Events\":[]}'\n")
-	if err := os.Chmod(filepath.Join(binDir, "aliyun"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
-
 	cfg := config.Config{}
 	cfg.Worker.Enabled = true
-	cfg.Aliyun.Profile = "sre-ecs-role"
+	cfg.Aliyun.ECSRAMRoleName = "sre-rca"
 	cfg.Aliyun.Workspace = "workspace"
 	cfg.Aliyun.Region = "cn-hangzhou"
 	cfg.Aliyun.SLSProject = "project"
@@ -88,7 +85,7 @@ incident_bindings:
 		ID: "incident-1", Workspace: "ws", RuleID: "rule", ResourceID: "resource", AlertAt: time.Now().UTC(),
 	}}}
 
-	service, err := NewEvidenceService(cfg, repo)
+	service, err := newEvidenceService(cfg, repo, fakeRuntimeCloud{})
 	if err != nil {
 		t.Fatal(err)
 	}

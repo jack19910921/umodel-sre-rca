@@ -125,9 +125,11 @@ following are true:
    edit does not start a process.
 5. Feishu app credentials and chat ID are present only in `/etc/sre-rca/sre.env`.
 6. `scripts/verify-worker-preflight.sh` succeeds as root with
-   `SRE_RCA_PREFLIGHT_INCIDENT_ID` set. The script checks the fixed Claude,
-   evidence CLI, and STS forms as `sre-rca` with `HOME=/var/lib/sre-rca` and a
-   clean child environment. It deliberately does not enable or start a
+   `SRE_RCA_PREFLIGHT_INCIDENT_ID` set. The script checks the fixed Claude and
+   evidence CLI as `sre-rca` with `HOME=/var/lib/sre-rca` and a clean child
+   environment. The evidence request is the live proof that the ECS RAM-role
+   SDK credential can access the reviewed evidence sources; no Alibaba Cloud
+   CLI or CLI profile is used. It deliberately does not enable or start a
    service.
 
 Only after those checks pass may the customer install

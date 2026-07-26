@@ -22,6 +22,17 @@ func NewEvidenceService(cfg config.Config, repo evidenceRepository) (*evidence.S
 	if !cfg.Worker.Enabled {
 		return nil, fmt.Errorf("worker runtime composition is disabled")
 	}
+	cloud, err := provider.NewAliyunSDKClient(cfg.Aliyun.Region, cfg.Aliyun.ECSRAMRoleName)
+	if err != nil {
+		return nil, err
+	}
+	return newEvidenceService(cfg, repo, cloud)
+}
+
+func newEvidenceService(cfg config.Config, repo evidenceRepository, cloud provider.AliyunAPI) (*evidence.Service, error) {
+	if cloud == nil {
+		return nil, fmt.Errorf("aliyun cloud client is required")
+	}
 	registry, err := evidence.LoadRegistry(cfg.EvidenceBindingsPath)
 	if err != nil {
 		return nil, err
@@ -35,9 +46,9 @@ func NewEvidenceService(cfg config.Config, repo evidenceRepository) (*evidence.S
 		return nil, err
 	}
 	aliyun := provider.NewAliyunProvider(provider.AliyunConfig{
-		Profile: cfg.Aliyun.Profile, Workspace: cfg.Aliyun.Workspace, Region: cfg.Aliyun.Region,
+		Workspace: cfg.Aliyun.Workspace, Region: cfg.Aliyun.Region, ECSRAMRoleName: cfg.Aliyun.ECSRAMRoleName,
 		SLSProject: cfg.Aliyun.SLSProject, SLSLogstore: cfg.Aliyun.SLSLogstore,
-	}, provider.NewAliyunRunner(cfg.Aliyun.Profile, provider.OSExecutor{}))
+	}, cloud)
 	providers := map[string]evidence.Provider{
 		"aliyun.umodel":          aliyun,
 		"aliyun.synthetic_probe": aliyun,
