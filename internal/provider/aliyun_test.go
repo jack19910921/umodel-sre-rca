@@ -50,3 +50,27 @@ func TestAliyunProviderRejectsUnsafeSelectorBeforeCloudRequest(t *testing.T) {
 		t.Fatalf("requests=%#v, want no cloud request for an unsafe selector", cloud.requests)
 	}
 }
+
+func TestAliyunProviderSeparatesNginxAccessAndErrorLogQueries(t *testing.T) {
+	cloud := &fakeCloudAPI{output: []byte(`{"logs":[]}`)}
+	provider := NewAliyunProvider(AliyunConfig{SLSProject: "sre-rca-demo", SLSLogstore: "nginx"}, cloud)
+	window := evidence.Window{Start: time.Unix(100, 0), End: time.Unix(200, 0)}
+	selectors := evidence.Selectors{"endpoint_id": "blog-http"}
+
+	if _, err := provider.Resolve(context.Background(), evidence.Binding{ID: "access", Provider: "aliyun.sls", QueryTemplate: "nginx_access_by_window_v1"}, selectors, window); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := provider.Resolve(context.Background(), evidence.Binding{ID: "error", Provider: "aliyun.sls", QueryTemplate: "nginx_error_by_window_v1"}, selectors, window); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(cloud.requests) != 2 {
+		t.Fatalf("requests=%#v, want two SLS queries", cloud.requests)
+	}
+	if got := cloud.requests[0].Body["query"]; got != "endpoint_id:blog-http AND log_kind:access" {
+		t.Fatalf("access query = %v", got)
+	}
+	if got := cloud.requests[1].Body["query"]; got != "endpoint_id:blog-http AND log_kind:error" {
+		t.Fatalf("error query = %v", got)
+	}
+}

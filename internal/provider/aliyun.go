@@ -114,7 +114,16 @@ func (p *AliyunProvider) resolveLogs(ctx context.Context, binding evidence.Bindi
 	if p.config.SLSProject == "" || p.config.SLSLogstore == "" {
 		return nil, fmt.Errorf("SLS project and logstore are required for Nginx logs")
 	}
-	query := "endpoint_id:" + endpointID
+	logKind := ""
+	switch binding.QueryTemplate {
+	case "nginx_access_by_window_v1":
+		logKind = "access"
+	case "nginx_error_by_window_v1":
+		logKind = "error"
+	default:
+		return nil, fmt.Errorf("unsupported Nginx log template %q", binding.QueryTemplate)
+	}
+	query := "endpoint_id:" + endpointID + " AND log_kind:" + logKind
 	raw, err := p.cloud.Call(ctx, AliyunRequest{Service: "sls", Operation: "GetLogsV2", Query: map[string]string{
 		"project":  p.config.SLSProject,
 		"logstore": p.config.SLSLogstore,
