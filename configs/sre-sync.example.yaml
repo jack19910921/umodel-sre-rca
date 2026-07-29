@@ -1,0 +1,27 @@
+# Administrator-triggered UModel static-model sync.
+#
+# This is intentionally separate from /etc/sre-rca/sre.yaml and from the RCA
+# worker. It only creates/updates records in the custom `sre` domain; it never
+# updates CloudMonitor-managed `acs` entities.
+workspace: default-cms-1876202723954089-cn-hangzhou
+region: cn-hangzhou
+ecs_ram_role_name: sre-rca
+
+# Leave type empty until the EntitySetLink schema has been confirmed in UModel
+# Explorer. The type must match the persisted schema exactly (for example,
+# `related_to` or `runs_on`), not merely a label shown in the graph UI.
+relation:
+  type: ""
+  destination_domain: acs
+  destination_entity_type: acs.ecs.instance
+
+# Field names below match the manually-created SRE 服务端点 EntitySet.
+endpoints:
+  - endpoint_id: blog-http
+    service_name: blog
+    service_url: https://jack-sre.com/
+    environment: prod
+    instance_id: i-bp17eb4oiqsmy10fq9mu
+    ecs_entity_id: d713389806398932cf6b1ff1eaa86a8b
+    region_id: cn-hangzhou
+    account_id: "1876202723954089"
