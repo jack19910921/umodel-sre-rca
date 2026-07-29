@@ -42,6 +42,9 @@ func TestBuildPlanWritesOnlySREEndpointAndOptionalACSTopology(t *testing.T) {
 	if got, want := entity["__method__"], "Update"; got != want {
 		t.Errorf("entity method = %q, want %q", got, want)
 	}
+	if got, want := entity["__last_observed_time__"], now.Unix(); got != want {
+		t.Errorf("entity last observed time = %#v, want Unix seconds %d", got, want)
+	}
 
 	relation := plan.Elements[1]
 	if got, want := relation["__src_domain__"], "sre"; got != want {
@@ -58,6 +61,9 @@ func TestBuildPlanWritesOnlySREEndpointAndOptionalACSTopology(t *testing.T) {
 	}
 	if got, want := relation["__relation_type__"], "runs_on"; got != want {
 		t.Errorf("relation type = %q, want %q", got, want)
+	}
+	if got, want := relation["__last_observed_time__"], now.Unix(); got != want {
+		t.Errorf("relation last observed time = %#v, want Unix seconds %d", got, want)
 	}
 }
 

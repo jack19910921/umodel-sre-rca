@@ -68,12 +68,13 @@ func BuildPlan(endpoint Endpoint, relation Relation, observedAt time.Time) (Plan
 
 	endpointID := deterministicEntityID(endpoint.EndpointID)
 	observedAt = observedAt.UTC()
+	observedAtUnix := observedAt.Unix()
 	entity := map[string]any{
 		"__domain__":             sreDomain,
 		"__entity_type__":        endpointEntityType,
 		"__entity_id__":          endpointID,
 		"__method__":             "Update",
-		"__last_observed_time__": observedAt.Format(time.RFC3339),
+		"__last_observed_time__": observedAtUnix,
 		"__keep_alive_seconds__": keepAliveSeconds,
 		"endpoint_id":            endpoint.EndpointID,
 		"service_name":           endpoint.ServiceName,
@@ -110,7 +111,7 @@ func BuildPlan(endpoint Endpoint, relation Relation, observedAt time.Time) (Plan
 		"__dest_entity_id__":     endpoint.ECSEntityID,
 		"__relation_type__":      relation.Type,
 		"__method__":             "Update",
-		"__last_observed_time__": observedAt.Format(time.RFC3339),
+		"__last_observed_time__": observedAtUnix,
 		"__keep_alive_seconds__": keepAliveSeconds,
 	})
 	return plan, nil
