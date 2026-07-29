@@ -76,8 +76,12 @@ func buildUpsertRequest(workspace string, plan Plan) (*openapi.Params, *openapi.
 			Style:       tea.String("ROA"),
 			ReqBodyType: tea.String("json"),
 			BodyType:    tea.String("json"),
-		}, &openapi.OpenApiRequest{Body: map[string]any{
-			"method":   "upsert",
-			"elements": plan.Elements,
-		}}, nil
+		}, &openapi.OpenApiRequest{
+			Query: map[string]*string{
+				"method": tea.String("upsert"),
+			},
+			Body: map[string]any{
+				"elements": plan.Elements,
+			},
+		}, nil
 }

@@ -35,8 +35,11 @@ func TestBuildUpsertRequestUsesOnlyTheDedicatedUModelWriteAPI(t *testing.T) {
 	if !ok {
 		t.Fatalf("body type = %T, want map[string]any", request.Body)
 	}
-	if got, want := body["method"], "upsert"; got != want {
-		t.Errorf("body method = %q, want %q", got, want)
+	if got, want := tea.StringValue(request.Query["method"]), "upsert"; got != want {
+		t.Errorf("query method = %q, want %q", got, want)
+	}
+	if _, ok := body["method"]; ok {
+		t.Errorf("body must not contain method: %#v", body)
 	}
 	elements, ok := body["elements"].([]map[string]any)
 	if !ok || len(elements) != 1 {
