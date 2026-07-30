@@ -17,6 +17,20 @@ type recordedWriter struct {
 	plan      modelsync.Plan
 }
 
+type recordedInspector struct {
+	called    bool
+	workspace string
+	domains   []string
+	result    map[string]any
+}
+
+func (i *recordedInspector) InspectSchema(_ context.Context, workspace string, domains []string) (map[string]any, error) {
+	i.called = true
+	i.workspace = workspace
+	i.domains = append([]string(nil), domains...)
+	return i.result, nil
+}
+
 func (w *recordedWriter) Upsert(_ context.Context, workspace string, plan modelsync.Plan) error {
 	w.called = true
 	w.workspace = workspace
@@ -73,6 +87,48 @@ func TestRunApplyUsesDedicatedWriter(t *testing.T) {
 	}
 	if got, want := len(writer.plan.Elements), 1; got != want {
 		t.Errorf("element count = %d, want %d", got, want)
+	}
+}
+
+func TestRunInspectSchemaUsesReadOnlyInspector(t *testing.T) {
+	configPath := writeSyncConfig(t)
+	inspector := &recordedInspector{result: map[string]any{"items": []any{"sre.service_endpoint"}}}
+	oldFactory := newSchemaInspector
+	defer func() { newSchemaInspector = oldFactory }()
+	newSchemaInspector = func(region, role string) (modelsync.SchemaInspector, error) {
+		if region != "cn-hangzhou" || role != "sre-rca" {
+			t.Fatalf("inspector args = %q, %q", region, role)
+		}
+		return inspector, nil
+	}
+
+	var stdout, stderr bytes.Buffer
+	if got := run([]string{"--config", configPath, "--inspect-schema"}, &stdout, &stderr); got != 0 {
+		t.Fatalf("run() = %d, stderr = %s", got, stderr.String())
+	}
+	if !inspector.called {
+		t.Fatal("inspector was not called")
+	}
+	if got, want := inspector.workspace, "default-cms-1876202723954089-cn-hangzhou"; got != want {
+		t.Errorf("workspace = %q, want %q", got, want)
+	}
+	if got, want := inspector.domains, []string{"sre"}; len(got) != len(want) || got[0] != want[0] {
+		t.Errorf("domains = %#v, want %#v", got, want)
+	}
+	var result map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+		t.Fatalf("decode output: %v", err)
+	}
+	if got, want := result["mode"], "schema-inspection"; got != want {
+		t.Errorf("mode = %q, want %q", got, want)
+	}
+}
+
+func TestRunRejectsApplyAndInspectSchemaTogether(t *testing.T) {
+	configPath := writeSyncConfig(t)
+	var stdout, stderr bytes.Buffer
+	if got := run([]string{"--config", configPath, "--apply", "--inspect-schema"}, &stdout, &stderr); got != 2 {
+		t.Fatalf("run() = %d, want 2; stderr = %s", got, stderr.String())
 	}
 }
 

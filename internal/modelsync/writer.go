@@ -19,6 +19,12 @@ type Writer interface {
 	Upsert(context.Context, string, Plan) error
 }
 
+// SchemaInspector is a deliberately read-only boundary used to verify how the
+// CMS UModel service currently sees a workspace before attempting a write.
+type SchemaInspector interface {
+	InspectSchema(context.Context, string, []string) (map[string]any, error)
+}
+
 // CMSWriter uses short-lived credentials from the customer ECS RAM role and
 // calls only CMS UpsertUmodelData. It cannot write to SLS, ECS, or ActionTrail.
 type CMSWriter struct {
@@ -59,6 +65,23 @@ func (w *CMSWriter) Upsert(ctx context.Context, workspace string, plan Plan) err
 	return nil
 }
 
+// InspectSchema reads the UModel graph for the supplied domains. It never
+// creates or mutates UModel data.
+func (w *CMSWriter) InspectSchema(ctx context.Context, workspace string, domains []string) (map[string]any, error) {
+	if w == nil || w.client == nil {
+		return nil, fmt.Errorf("UModel writer is not configured")
+	}
+	params, request, err := buildGetUmodelDataRequest(workspace, domains)
+	if err != nil {
+		return nil, err
+	}
+	result, err := w.client.CallApiWithCtx(ctx, params, request, &dara.RuntimeOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("get UModel graph: %w", err)
+	}
+	return result, nil
+}
+
 func buildUpsertRequest(workspace string, plan Plan) (*openapi.Params, *openapi.OpenApiRequest, error) {
 	if !workspacePattern.MatchString(workspace) {
 		return nil, nil, fmt.Errorf("unsafe workspace name %q", workspace)
@@ -82,6 +105,42 @@ func buildUpsertRequest(workspace string, plan Plan) (*openapi.Params, *openapi.
 			},
 			Body: map[string]any{
 				"elements": plan.Elements,
+			},
+		}, nil
+}
+
+func buildGetUmodelDataRequest(workspace string, domains []string) (*openapi.Params, *openapi.OpenApiRequest, error) {
+	if !workspacePattern.MatchString(workspace) {
+		return nil, nil, fmt.Errorf("unsafe workspace name %q", workspace)
+	}
+	cleanDomains := make([]string, 0, len(domains))
+	for _, domain := range domains {
+		if domain != "" {
+			cleanDomains = append(cleanDomains, domain)
+		}
+	}
+	return &openapi.Params{
+			Action:      tea.String("GetUmodelData"),
+			Version:     tea.String("2024-03-30"),
+			Protocol:    tea.String("HTTPS"),
+			Pathname:    tea.String("/workspace/" + workspace + "/umodel/graph"),
+			Method:      tea.String("POST"),
+			AuthType:    tea.String("AK"),
+			Style:       tea.String("ROA"),
+			ReqBodyType: tea.String("json"),
+			BodyType:    tea.String("json"),
+		}, &openapi.OpenApiRequest{
+			Query: map[string]*string{
+				"method": tea.String("ListData"),
+			},
+			Body: map[string]any{
+				"content": map[string]any{
+					"filter": map[string]any{
+						"domains": cleanDomains,
+					},
+					"offset": 0,
+					"size":   1000,
+				},
 			},
 		}, nil
 }

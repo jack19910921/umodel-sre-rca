@@ -37,6 +37,23 @@ Confirm in the output that every entity has:
 - `__entity_type__` equal to `sre.service_endpoint`;
 - the intended `endpoint_id` and native `ecs_entity_id`.
 
+## Read-only UModel inspection
+
+When an apply request fails, inspect the service-side UModel graph before
+changing the entity payload. This command does not write data and is mutually
+exclusive with `--apply`:
+
+```bash
+/opt/sre-rca/bin/sre-sync \
+  --config /etc/sre-rca/sre-sync.yaml \
+  --inspect-schema
+```
+
+The response is the raw graph result restricted to the `sre` domain. It can
+confirm whether the saved workspace recognizes `sre.service_endpoint`, and
+whether the ECS RAM role can read that graph. Grant `cms:GetUmodelData` only if
+the command returns an authorization error.
+
 ## Relation guardrail
 
 An EntitySetLink in UModel Explorer is only a **schema definition**. A
@@ -69,6 +86,12 @@ scoped to the target workspace where possible:
 
 ```text
 cms:UpsertUmodelData
+```
+
+The optional inspection mode additionally needs:
+
+```text
+cms:GetUmodelData
 ```
 
 The CloudMonitor callback receiver and evidence CLI keep their own separate,
