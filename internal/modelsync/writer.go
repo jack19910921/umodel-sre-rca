@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"regexp"
+	"strconv"
+	"time"
 
 	openapi "github.com/alibabacloud-go/darabonba-openapi/v2/client"
 	"github.com/alibabacloud-go/tea/dara"
@@ -65,19 +67,27 @@ func (w *CMSWriter) Upsert(ctx context.Context, workspace string, plan Plan) err
 	return nil
 }
 
-// InspectSchema reads the UModel graph for the supplied domains. It never
-// creates or mutates UModel data.
+// InspectSchema reads the supported EntityStore query API for the supplied
+// SRE domain. It never creates or mutates UModel data.
 func (w *CMSWriter) InspectSchema(ctx context.Context, workspace string, domains []string) (map[string]any, error) {
 	if w == nil || w.client == nil {
 		return nil, fmt.Errorf("UModel writer is not configured")
 	}
-	params, request, err := buildGetUmodelDataRequest(workspace, domains)
+	if len(domains) != 1 || domains[0] != "sre" {
+		return nil, fmt.Errorf("only the sre domain can be inspected")
+	}
+	params, request, err := buildGetEntityStoreDataRequest(
+		workspace,
+		"sre",
+		"sre.service_endpoint",
+		time.Now().UTC(),
+	)
 	if err != nil {
 		return nil, err
 	}
 	result, err := w.client.CallApiWithCtx(ctx, params, request, &dara.RuntimeOptions{})
 	if err != nil {
-		return nil, fmt.Errorf("get UModel graph: %w", err)
+		return nil, fmt.Errorf("get UModel EntityStore data: %w", err)
 	}
 	return result, nil
 }
@@ -109,38 +119,33 @@ func buildUpsertRequest(workspace string, plan Plan) (*openapi.Params, *openapi.
 		}, nil
 }
 
-func buildGetUmodelDataRequest(workspace string, domains []string) (*openapi.Params, *openapi.OpenApiRequest, error) {
+func buildGetEntityStoreDataRequest(workspace, domain, entityType string, observedAt time.Time) (*openapi.Params, *openapi.OpenApiRequest, error) {
 	if !workspacePattern.MatchString(workspace) {
 		return nil, nil, fmt.Errorf("unsafe workspace name %q", workspace)
 	}
-	cleanDomains := make([]string, 0, len(domains))
-	for _, domain := range domains {
-		if domain != "" {
-			cleanDomains = append(cleanDomains, domain)
-		}
+	if domain != "sre" || entityType != "sre.service_endpoint" {
+		return nil, nil, fmt.Errorf("unsupported EntityStore inspection target %q/%q", domain, entityType)
 	}
+	if observedAt.IsZero() {
+		return nil, nil, fmt.Errorf("EntityStore inspection time is required")
+	}
+	to := observedAt.UTC().Unix()
+	from := observedAt.UTC().Add(-48 * time.Hour).Unix()
 	return &openapi.Params{
-			Action:      tea.String("GetUmodelData"),
+			Action:      tea.String("GetEntityStoreData"),
 			Version:     tea.String("2024-03-30"),
 			Protocol:    tea.String("HTTPS"),
-			Pathname:    tea.String("/workspace/" + workspace + "/umodel/graph"),
+			Pathname:    tea.String("/workspace/" + workspace + "/entitiesAndRelations"),
 			Method:      tea.String("POST"),
 			AuthType:    tea.String("AK"),
 			Style:       tea.String("ROA"),
-			ReqBodyType: tea.String("json"),
+			ReqBodyType: tea.String("formData"),
 			BodyType:    tea.String("json"),
 		}, &openapi.OpenApiRequest{
 			Query: map[string]*string{
-				"method": tea.String("ListData"),
-			},
-			Body: map[string]any{
-				"content": map[string]any{
-					"filter": map[string]any{
-						"domains": cleanDomains,
-					},
-					"offset": 0,
-					"size":   1000,
-				},
+				"from":  tea.String(strconv.FormatInt(from, 10)),
+				"to":    tea.String(strconv.FormatInt(to, 10)),
+				"query": tea.String(".entity with(domain='" + domain + "', type='" + entityType + "') | limit 0, 10"),
 			},
 		}, nil
 }

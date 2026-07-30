@@ -5,8 +5,9 @@ domain. It creates/updates a small service-endpoint projection and may create
 the corresponding relation to an existing native ECS entity.
 
 It is not part of the alert callback path and it does not start the RCA worker.
-It uses the ECS RAM role and calls only CMS `UpsertUmodelData`; it does not
-write to ECS, SLS, ActionTrail, or the native `acs` domain.
+It uses the ECS RAM role and calls CMS `UpsertUmodelData` only when explicitly
+run with `--apply`; it does not write to ECS, SLS, ActionTrail, or the native
+`acs` domain. Its read-only inspection mode calls CMS `GetEntityStoreData`.
 
 ## Build
 
@@ -39,7 +40,7 @@ Confirm in the output that every entity has:
 
 ## Read-only UModel inspection
 
-When an apply request fails, inspect the service-side UModel graph before
+When an apply request fails, inspect the service-side EntityStore before
 changing the entity payload. This command does not write data and is mutually
 exclusive with `--apply`:
 
@@ -49,10 +50,21 @@ exclusive with `--apply`:
   --inspect-schema
 ```
 
-The response is the raw graph result restricted to the `sre` domain. It can
-confirm whether the saved workspace recognizes `sre.service_endpoint`, and
-whether the ECS RAM role can read that graph. Grant `cms:GetUmodelData` only if
-the command returns an authorization error.
+The command uses the supported CloudMonitor 2.0 API
+`POST /workspace/{workspace}/entitiesAndRelations` (`GetEntityStoreData`) with
+the UModel query:
+
+```text
+.entity with(domain='sre', type='sre.service_endpoint') | limit 0, 10
+```
+
+The response is the raw EntityStore result for the custom endpoint model. It
+can confirm whether the saved workspace has registered
+`sre.service_endpoint` at runtime and whether the ECS RAM role can query it.
+Inspect `responseStatus.statusItem`: `UModelNotExist` is the authoritative
+signal that the model has not been registered in the runtime EntityStore.
+Grant `cms:GetEntityStoreData` only if the command returns an authorization
+error.
 
 ## Relation guardrail
 
@@ -91,7 +103,7 @@ cms:UpsertUmodelData
 The optional inspection mode additionally needs:
 
 ```text
-cms:GetUmodelData
+cms:GetEntityStoreData
 ```
 
 The CloudMonitor callback receiver and evidence CLI keep their own separate,
