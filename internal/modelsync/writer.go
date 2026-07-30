@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"regexp"
-	"strconv"
 	"time"
 
 	openapi "github.com/alibabacloud-go/darabonba-openapi/v2/client"
@@ -139,13 +138,13 @@ func buildGetEntityStoreDataRequest(workspace, domain, entityType string, observ
 			Method:      tea.String("POST"),
 			AuthType:    tea.String("AK"),
 			Style:       tea.String("ROA"),
-			ReqBodyType: tea.String("formData"),
+			ReqBodyType: tea.String("json"),
 			BodyType:    tea.String("json"),
 		}, &openapi.OpenApiRequest{
-			Query: map[string]*string{
-				"from":  tea.String(strconv.FormatInt(from, 10)),
-				"to":    tea.String(strconv.FormatInt(to, 10)),
-				"query": tea.String(".entity with(domain='" + domain + "', type='" + entityType + "') | limit 0, 10"),
+			Body: map[string]any{
+				"from":  from,
+				"to":    to,
+				"query": ".entity with(domain='" + domain + "', type='" + entityType + "') | limit 0, 10",
 			},
 		}, nil
 }

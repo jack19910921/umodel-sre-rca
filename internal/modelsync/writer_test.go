@@ -80,17 +80,24 @@ func TestBuildGetEntityStoreDataRequestUsesSupportedReadOnlyAPI(t *testing.T) {
 	if got, want := tea.StringValue(params.Pathname), "/workspace/default-cms-1876202723954089-cn-hangzhou/entitiesAndRelations"; got != want {
 		t.Errorf("pathname = %q, want %q", got, want)
 	}
-	if got, want := tea.StringValue(request.Query["query"]), ".entity with(domain='sre', type='sre.service_endpoint') | limit 0, 10"; got != want {
-		t.Errorf("query = %q, want %q", got, want)
+	if got, want := tea.StringValue(params.ReqBodyType), "json"; got != want {
+		t.Errorf("request body type = %q, want %q", got, want)
 	}
-	if got, want := tea.StringValue(request.Query["from"]), "1785194554"; got != want {
-		t.Errorf("from = %q, want %q", got, want)
+	if len(request.Query) != 0 {
+		t.Errorf("query parameters = %#v, want none", request.Query)
 	}
-	if got, want := tea.StringValue(request.Query["to"]), "1785367354"; got != want {
-		t.Errorf("to = %q, want %q", got, want)
+	body, ok := request.Body.(map[string]any)
+	if !ok {
+		t.Fatalf("body type = %T, want map[string]any", request.Body)
 	}
-	if request.Body != nil {
-		t.Errorf("body = %#v, want nil", request.Body)
+	if got, want := body["query"], ".entity with(domain='sre', type='sre.service_endpoint') | limit 0, 10"; got != want {
+		t.Errorf("body query = %#v, want %#v", got, want)
+	}
+	if got, want := body["from"], int64(1_785_194_554); got != want {
+		t.Errorf("body from = %#v, want %#v", got, want)
+	}
+	if got, want := body["to"], int64(1_785_367_354); got != want {
+		t.Errorf("body to = %#v, want %#v", got, want)
 	}
 }
 

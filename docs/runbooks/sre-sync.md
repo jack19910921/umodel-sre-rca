@@ -51,8 +51,9 @@ exclusive with `--apply`:
 ```
 
 The command uses the supported CloudMonitor 2.0 API
-`POST /workspace/{workspace}/entitiesAndRelations` (`GetEntityStoreData`) with
-the UModel query:
+`POST /workspace/{workspace}/entitiesAndRelations` (`GetEntityStoreData`).
+The required `from`, `to`, and `query` values are sent in its JSON request
+body, with the UModel query:
 
 ```text
 .entity with(domain='sre', type='sre.service_endpoint') | limit 0, 10
