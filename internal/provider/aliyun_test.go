@@ -80,6 +80,27 @@ func TestAliyunProviderSeparatesNginxAccessAndErrorLogQueries(t *testing.T) {
 	}
 }
 
+func TestBuildNginxLogsRequestQuotesEverySelectorValue(t *testing.T) {
+	request, err := buildNginxLogsRequest(
+		AliyunConfig{SLSProject: "sre-rca-demo", SLSLogstore: "nginx"},
+		"access",
+		evidence.Selectors{"endpoint_id": "blog-http", "instance_id": "i-demo"},
+		evidence.Window{Start: time.Unix(100, 0), End: time.Unix(200, 0)},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := request.Service, "sls"; got != want {
+		t.Fatalf("service = %q, want %q", got, want)
+	}
+	if got, want := request.Operation, "GetLogs"; got != want {
+		t.Fatalf("operation = %q, want %q", got, want)
+	}
+	if got, want := request.Body["query"], "endpoint_id:\"blog-http\" AND log_kind:\"access\" AND instance_id:\"i-demo\""; got != want {
+		t.Fatalf("query = %#v, want %#v", got, want)
+	}
+}
+
 func TestAliyunProviderBuildsECSCPUWindowMetricRequest(t *testing.T) {
 	cloud := &fakeCloudAPI{output: []byte(`{"Datapoints":"[]"}`)}
 	provider := NewAliyunProvider(AliyunConfig{Region: "cn-hangzhou"}, cloud)

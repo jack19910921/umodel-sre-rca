@@ -84,27 +84,13 @@ func (w *CMSWriter) Upsert(ctx context.Context, workspace string, plan Plan) err
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if !workspacePattern.MatchString(workspace) {
-		return fmt.Errorf("unsafe workspace name %q", workspace)
+	writes, err := buildEntityStoreWrites(workspace, plan, time.Now().UTC())
+	if err != nil {
+		return err
 	}
-	entities, relations := splitEntityStorePlan(plan)
-	observedAt := time.Now().UTC()
-	if len(entities.Elements) > 0 {
-		group, err := buildEntityStoreLogGroup(entities, observedAt)
-		if err != nil {
-			return err
-		}
-		if err := w.logClient.PutLogs(workspace, entityStoreEntityLogStoreName(workspace), group); err != nil {
-			return fmt.Errorf("write UModel EntityStore entity data: %w", err)
-		}
-	}
-	if len(relations.Elements) > 0 {
-		group, err := buildEntityStoreRelationLogGroup(relations, observedAt)
-		if err != nil {
-			return err
-		}
-		if err := w.logClient.PutLogs(workspace, entityStoreTopoLogStoreName(workspace), group); err != nil {
-			return fmt.Errorf("write UModel EntityStore relation data: %w", err)
+	for _, write := range writes {
+		if err := w.logClient.PutLogs(workspace, write.logstore, write.group); err != nil {
+			return fmt.Errorf("%s: %w", write.description, err)
 		}
 	}
 	return nil

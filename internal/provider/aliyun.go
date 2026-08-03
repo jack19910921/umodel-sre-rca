@@ -13,7 +13,6 @@ import (
 
 	"github.com/jack/umodel-sre-rca/internal/domain"
 	"github.com/jack/umodel-sre-rca/internal/evidence"
-	"github.com/jack/umodel-sre-rca/internal/umodelid"
 )
 
 type AliyunConfig struct {
@@ -63,17 +62,11 @@ func (p *AliyunProvider) resolveTopologyContext(ctx context.Context, binding evi
 	if err != nil {
 		return nil, err
 	}
-	if p.config.Workspace == "" {
-		return nil, fmt.Errorf("aliyun workspace is required for UModel topology context")
+	request, err := buildEntityStoreTopologyRequest(p.config, endpointID, window)
+	if err != nil {
+		return nil, err
 	}
-	entityID := umodelid.EndpointEntityID(endpointID)
-	query := ".topo | graph-call getNeighborNodes('sequence_out', 1, [(:\"sre@sre.service_endpoint\" {__entity_id__: '" + entityID + "'})]) | where relationType = 'runs_on'"
-	raw, err := p.cloud.Call(ctx, AliyunRequest{Service: "cms", Operation: "GetEntityStoreData", Query: map[string]string{
-		"Workspace": p.config.Workspace,
-		"From":      fmt.Sprint(window.Start.Unix()),
-		"To":        fmt.Sprint(window.End.Unix()),
-		"Query":     query,
-	}})
+	raw, err := p.cloud.Call(ctx, request)
 	if err != nil {
 		return nil, err
 	}
@@ -85,16 +78,11 @@ func (p *AliyunProvider) resolveContext(ctx context.Context, binding evidence.Bi
 	if err != nil {
 		return nil, err
 	}
-	if p.config.Workspace == "" {
-		return nil, fmt.Errorf("aliyun workspace is required for UModel context")
+	request, err := buildEntityStoreContextRequest(p.config, endpointID, window)
+	if err != nil {
+		return nil, err
 	}
-	query := ".entity with(domain='sre', type='sre.service_endpoint') | where endpoint_id = '" + endpointID + "' | limit 0, 1"
-	raw, err := p.cloud.Call(ctx, AliyunRequest{Service: "cms", Operation: "GetEntityStoreData", Query: map[string]string{
-		"Workspace": p.config.Workspace,
-		"From":      fmt.Sprint(window.Start.Unix()),
-		"To":        fmt.Sprint(window.End.Unix()),
-		"Query":     query,
-	}})
+	raw, err := p.cloud.Call(ctx, request)
 	if err != nil {
 		return nil, err
 	}
@@ -102,33 +90,11 @@ func (p *AliyunProvider) resolveContext(ctx context.Context, binding evidence.Bi
 }
 
 func (p *AliyunProvider) resolveMetrics(ctx context.Context, binding evidence.Binding, selectors evidence.Selectors, window evidence.Window) ([]domain.Evidence, error) {
-	instanceID := selectors["instance_id"]
-	probeTaskID := selectors["probe_task_id"]
-	regionID := p.config.Region
-	if selectorRegionID := selectors["region_id"]; selectorRegionID != "" {
-		regionID = selectorRegionID
-	}
-	if err := validateSelectorValue(regionID); err != nil {
+	request, err := buildMetricsRequest(p.config, selectors, window)
+	if err != nil {
 		return nil, err
 	}
-	query := map[string]string{"StartTime": window.Start.UTC().Format(time.RFC3339), "EndTime": window.End.UTC().Format(time.RFC3339), "RegionId": regionID}
-	if instanceID != "" {
-		if err := validateSelectorValue(instanceID); err != nil {
-			return nil, err
-		}
-		query["Namespace"] = "acs_ecs_dashboard"
-		query["MetricName"] = "cpu_total"
-		query["Period"] = "60"
-		query["Dimensions"] = "[{\"instanceId\":\"" + instanceID + "\"}]"
-	} else if probeTaskID != "" {
-		if err := validateSelectorValue(probeTaskID); err != nil {
-			return nil, err
-		}
-		query["Dimensions"] = "[{\"taskId\":\"" + probeTaskID + "\"}]"
-	} else {
-		return nil, fmt.Errorf("metrics binding requires instance_id or probe_task_id")
-	}
-	raw, err := p.cloud.Call(ctx, AliyunRequest{Service: "cms", Operation: "DescribeMetricList", Query: query})
+	raw, err := p.cloud.Call(ctx, request)
 	if err != nil {
 		return nil, err
 	}
@@ -136,17 +102,6 @@ func (p *AliyunProvider) resolveMetrics(ctx context.Context, binding evidence.Bi
 }
 
 func (p *AliyunProvider) resolveLogs(ctx context.Context, binding evidence.Binding, selectors evidence.Selectors, window evidence.Window) ([]domain.Evidence, error) {
-	endpointID, err := requiredSelector(selectors, "endpoint_id")
-	if err != nil {
-		return nil, err
-	}
-	instanceID, err := requiredSelector(selectors, "instance_id")
-	if err != nil {
-		return nil, err
-	}
-	if p.config.SLSProject == "" || p.config.SLSLogstore == "" {
-		return nil, fmt.Errorf("SLS project and logstore are required for Nginx logs")
-	}
 	logKind := ""
 	switch binding.QueryTemplate {
 	case "nginx_access_by_window_v1":
@@ -156,16 +111,11 @@ func (p *AliyunProvider) resolveLogs(ctx context.Context, binding evidence.Bindi
 	default:
 		return nil, fmt.Errorf("unsupported Nginx log template %q", binding.QueryTemplate)
 	}
-	query := "endpoint_id:\"" + endpointID + "\" AND log_kind:\"" + logKind + "\" AND instance_id:\"" + instanceID + "\""
-	raw, err := p.cloud.Call(ctx, AliyunRequest{Service: "sls", Operation: "GetLogs", Query: map[string]string{
-		"project":  p.config.SLSProject,
-		"logstore": p.config.SLSLogstore,
-	}, Body: map[string]any{
-		"from":  int32(window.Start.Unix()),
-		"to":    int32(window.End.Unix()),
-		"query": query,
-		"line":  int64(100),
-	}})
+	request, err := buildNginxLogsRequest(p.config, logKind, selectors, window)
+	if err != nil {
+		return nil, err
+	}
+	raw, err := p.cloud.Call(ctx, request)
 	if err != nil {
 		return nil, err
 	}
@@ -278,13 +228,7 @@ func (p *AliyunProvider) resolveChanges(ctx context.Context, binding evidence.Bi
 	if err != nil {
 		return nil, err
 	}
-	raw, err := p.cloud.Call(ctx, AliyunRequest{Service: "actiontrail", Operation: "LookupEvents", Query: map[string]string{
-		"ResourceName": securityGroupID,
-		"EventRW":      "Write",
-		"StartTime":    window.Start.UTC().Format(time.RFC3339),
-		"EndTime":      window.End.UTC().Format(time.RFC3339),
-		"MaxResults":   "50",
-	}})
+	raw, err := p.cloud.Call(ctx, buildActionTrailRequest(securityGroupID, window))
 	if err != nil {
 		return nil, err
 	}

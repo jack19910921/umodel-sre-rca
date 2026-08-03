@@ -94,6 +94,32 @@ func TestCMSWriterUpsertWritesRelationToTopoLogstore(t *testing.T) {
 	}
 }
 
+func TestBuildEntityStoreWritesSeparatesEntityAndRelationBatches(t *testing.T) {
+	writes, err := buildEntityStoreWrites("customer-workspace", Plan{Elements: []map[string]any{
+		{
+			"__domain__": "sre", "__entity_type__": "sre.service_endpoint",
+			"__entity_id__": "endpoint-1", "__last_observed_time__": 1,
+		},
+		{
+			"__src_domain__": "sre", "__src_entity_type__": "sre.service_endpoint", "__src_entity_id__": "endpoint-1",
+			"__dest_domain__": "acs", "__dest_entity_type__": "acs.ecs.instance", "__dest_entity_id__": "ecs-1",
+			"__relation_type__": "runs_on", "__last_observed_time__": 1,
+		},
+	}}, time.Unix(1, 0).UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := len(writes), 2; got != want {
+		t.Fatalf("write count = %d, want %d", got, want)
+	}
+	if got, want := writes[0].logstore, "customer-workspace__entity"; got != want {
+		t.Fatalf("entity logstore = %q, want %q", got, want)
+	}
+	if got, want := writes[1].logstore, "customer-workspace__topo"; got != want {
+		t.Fatalf("relation logstore = %q, want %q", got, want)
+	}
+}
+
 func TestCMSWriterUpsertWritesToEntityLogstore(t *testing.T) {
 	fake := &recordingLogClient{}
 	writer := &CMSWriter{logClient: fake}
