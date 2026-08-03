@@ -75,3 +75,8 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /tmp/sre-sync.verify ./cmd/sre
 - 不用 `UpsertUmodelData` 写 EntityStore 实例；实体写 `${workspace}__entity`、关系
   写 `${workspace}__topo`，并通过 CMS `GetEntityStoreData` 只读验证。
 - 不提交 `.tar.gz`、二进制或构建产物。
+
+## 许可证
+
+本项目采用 [Apache License 2.0](LICENSE)。你可以在该许可证的条件下使用、修改和
+分发本项目；其中包括保留许可证和相关声明等义务。
