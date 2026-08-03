@@ -22,6 +22,13 @@ another source.
 Do not invent evidence. If ActionTrail data is unavailable, return the evidence
 you have and set `pending_audit` to `true`.
 
+The prompt includes `ALLOWED_EVIDENCE_IDS`. `evidence_ids` must be a non-empty
+subset of those exact strings. Copy an ID verbatim; never hash, transform,
+infer, or invent an ID.
+
+Use Simplified Chinese for `summary`, `root_cause`, and every item in
+`next_actions`. Keep only opaque IDs, URLs, and machine field names unchanged.
+
 Return only this JSON object, with no markdown or explanation:
 
 ```json

@@ -1,0 +1,19 @@
+# Static UModel context only. Dynamic metrics, logs, and changes remain
+# deliberately unbound until their reviewed selectors and data sources are
+# separately verified.
+bindings:
+  - id: endpoint_context
+    evidence_class: context
+    target: sre.service_endpoint
+    provider: aliyun.umodel
+    query_template: endpoint_context_v1
+    selector_mapping:
+      endpoint_id: endpoint_id
+
+  - id: endpoint_runs_on_topology
+    evidence_class: context
+    target: sre.service_endpoint
+    provider: aliyun.umodel
+    query_template: endpoint_topology_v1
+    selector_mapping:
+      endpoint_id: endpoint_id

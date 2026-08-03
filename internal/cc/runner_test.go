@@ -13,6 +13,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/jack/umodel-sre-rca/internal/domain"
 )
 
 func TestRunnerBuildsToolFreeFixedCommandWithMinimalEnvironment(t *testing.T) {
@@ -102,7 +104,7 @@ func TestRunnerProductionCommandCannotBeRedirected(t *testing.T) {
 }
 
 func TestRunnerRejectsUnsafeIncidentReference(t *testing.T) {
-	_, err := (Runner{}).Run(context.Background(), "inc-1;touch /tmp/pwned")
+	_, err := (Runner{}).Run(context.Background(), "inc-1;touch /tmp/pwned", fixedCollections())
 	if err == nil || !strings.Contains(err.Error(), "safe reference") {
 		t.Fatalf("err=%v", err)
 	}
@@ -110,7 +112,7 @@ func TestRunnerRejectsUnsafeIncidentReference(t *testing.T) {
 
 func TestRunnerKeepsStderrOutOfValidJSON(t *testing.T) {
 	runner := Runner{commandFactory: helperCommandFactory("valid-with-stderr", ""), workingDir: t.TempDir()}
-	result, err := runner.Run(context.Background(), "inc-1")
+	result, err := runner.Run(context.Background(), "inc-1", fixedCollections())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -119,9 +121,33 @@ func TestRunnerKeepsStderrOutOfValidJSON(t *testing.T) {
 	}
 }
 
+func TestRunnerUsesCallerEvidenceWithoutRequerying(t *testing.T) {
+	var commands []string
+	runner := Runner{
+		commandFactory: func(ctx context.Context, name string, _ ...string) *exec.Cmd {
+			commands = append(commands, name)
+			return exec.CommandContext(ctx, "/bin/echo", `{"summary":"valid RCA","confidence":0.9,"root_cause":"test","evidence_ids":["ev-context"],"next_actions":["review"]}`)
+		},
+		workingDir: t.TempDir(),
+	}
+	collections := fixedCollections()
+	collections[0].Evidence = []domain.Evidence{{ID: "ev-context"}}
+
+	result, err := runner.Run(context.Background(), "inc-1", collections)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Summary != "valid RCA" {
+		t.Fatalf("result=%#v", result)
+	}
+	if got, want := commands, []string{defaultClaudeBinary}; !equalStrings(got, want) {
+		t.Fatalf("commands=%q want=%q", got, want)
+	}
+}
+
 func TestRunnerFailureDoesNotExposeRawOutput(t *testing.T) {
 	runner := Runner{commandFactory: helperCommandFactory("failing", ""), workingDir: t.TempDir()}
-	_, err := runner.Run(context.Background(), "inc-1")
+	_, err := runner.Run(context.Background(), "inc-1", fixedCollections())
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -141,7 +167,7 @@ func TestRunnerTimeoutKillsProcessGroupDescendants(t *testing.T) {
 		commandFactory: helperCommandFactory("spawn-child", pidFile),
 		workingDir:     t.TempDir(),
 	}
-	_, err := runner.Run(context.Background(), "inc-1")
+	_, err := runner.Run(context.Background(), "inc-1", fixedCollections())
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("err=%v", err)
 	}
@@ -187,6 +213,43 @@ func TestParseResultAcceptsValidEvidence(t *testing.T) {
 	}
 }
 
+func TestParseResultAcceptsClaudeJSONEnvelopeWithFencedResult(t *testing.T) {
+	raw := []byte("{\"result\":\"```json\\n{\\\"summary\\\":\\\"valid RCA\\\",\\\"confidence\\\":0.9,\\\"root_cause\\\":\\\"test\\\",\\\"evidence_ids\\\":[\\\"ev-context\\\"],\\\"next_actions\\\":[\\\"review\\\"]}\\n```\"}")
+
+	got, err := ParseResult(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Summary != "valid RCA" || got.RootCause != "test" {
+		t.Fatalf("result=%#v", got)
+	}
+}
+
+func TestBuildPromptExplicitlyRestrictsEvidenceIDsToSuppliedEvidence(t *testing.T) {
+	collections := fixedCollections()
+	collections[0].Evidence = []domain.Evidence{{ID: "ev-context"}}
+	prompt, err := buildPrompt("inc-1", collections)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(prompt, "must be a non-empty subset of the exact IDs in ALLOWED_EVIDENCE_IDS") {
+		t.Fatalf("prompt does not constrain evidence IDs: %q", prompt)
+	}
+	if !strings.Contains(prompt, `"ev-context"`) {
+		t.Fatalf("prompt does not list the supplied evidence ID: %q", prompt)
+	}
+}
+
+func TestBuildPromptRequiresSimplifiedChineseRCAValues(t *testing.T) {
+	prompt, err := buildPrompt("inc-1", fixedCollections())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(prompt, "Use Simplified Chinese for every human-readable RCA value") {
+		t.Fatalf("prompt does not require Simplified Chinese: %q", prompt)
+	}
+}
+
 func helperCommandFactory(mode, pidFile string) commandFactory {
 	return func(ctx context.Context, name string, args ...string) *exec.Cmd {
 		if name != defaultClaudeBinary {
@@ -196,10 +259,10 @@ func helperCommandFactory(mode, pidFile string) commandFactory {
 	}
 }
 
-func fixedCollections() []evidenceCollection {
-	collections := make([]evidenceCollection, 0, len(fixedEvidenceForms))
+func fixedCollections() []EvidenceCollection {
+	collections := make([]EvidenceCollection, 0, len(fixedEvidenceForms))
 	for _, form := range fixedEvidenceForms {
-		collections = append(collections, evidenceCollection{Form: strings.Join(form, " ")})
+		collections = append(collections, EvidenceCollection{Form: strings.Join(form, " ")})
 	}
 	return collections
 }

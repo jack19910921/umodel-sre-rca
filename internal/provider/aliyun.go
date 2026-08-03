@@ -7,11 +7,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/jack/umodel-sre-rca/internal/domain"
 	"github.com/jack/umodel-sre-rca/internal/evidence"
+	"github.com/jack/umodel-sre-rca/internal/umodelid"
 )
 
 type AliyunConfig struct {
@@ -43,6 +45,8 @@ func (p *AliyunProvider) Resolve(ctx context.Context, binding evidence.Binding, 
 	switch binding.QueryTemplate {
 	case "endpoint_context_v1":
 		return p.resolveContext(ctx, binding, selectors, window)
+	case "endpoint_topology_v1":
+		return p.resolveTopologyContext(ctx, binding, selectors, window)
 	case "availability_window_v1", "ecs_normal_state_window_v1":
 		return p.resolveMetrics(ctx, binding, selectors, window)
 	case "nginx_access_by_window_v1", "nginx_error_by_window_v1":
@@ -52,6 +56,28 @@ func (p *AliyunProvider) Resolve(ctx context.Context, binding evidence.Binding, 
 	default:
 		return nil, fmt.Errorf("template %q is not implemented", binding.QueryTemplate)
 	}
+}
+
+func (p *AliyunProvider) resolveTopologyContext(ctx context.Context, binding evidence.Binding, selectors evidence.Selectors, window evidence.Window) ([]domain.Evidence, error) {
+	endpointID, err := requiredSelector(selectors, "endpoint_id")
+	if err != nil {
+		return nil, err
+	}
+	if p.config.Workspace == "" {
+		return nil, fmt.Errorf("aliyun workspace is required for UModel topology context")
+	}
+	entityID := umodelid.EndpointEntityID(endpointID)
+	query := ".topo | graph-call getNeighborNodes('sequence_out', 1, [(:\"sre@sre.service_endpoint\" {__entity_id__: '" + entityID + "'})]) | where relationType = 'runs_on'"
+	raw, err := p.cloud.Call(ctx, AliyunRequest{Service: "cms", Operation: "GetEntityStoreData", Query: map[string]string{
+		"Workspace": p.config.Workspace,
+		"From":      fmt.Sprint(window.Start.Unix()),
+		"To":        fmt.Sprint(window.End.Unix()),
+		"Query":     query,
+	}})
+	if err != nil {
+		return nil, err
+	}
+	return []domain.Evidence{newEvidence(binding.ID, "context", window.End, "cms:GetEntityStoreData", "cms:GetEntityStoreData:topology", "UModel endpoint topology resolved", raw)}, nil
 }
 
 func (p *AliyunProvider) resolveContext(ctx context.Context, binding evidence.Binding, selectors evidence.Selectors, window evidence.Window) ([]domain.Evidence, error) {
@@ -90,6 +116,9 @@ func (p *AliyunProvider) resolveMetrics(ctx context.Context, binding evidence.Bi
 		if err := validateSelectorValue(instanceID); err != nil {
 			return nil, err
 		}
+		query["Namespace"] = "acs_ecs_dashboard"
+		query["MetricName"] = "cpu_total"
+		query["Period"] = "60"
 		query["Dimensions"] = "[{\"instanceId\":\"" + instanceID + "\"}]"
 	} else if probeTaskID != "" {
 		if err := validateSelectorValue(probeTaskID); err != nil {
@@ -103,11 +132,15 @@ func (p *AliyunProvider) resolveMetrics(ctx context.Context, binding evidence.Bi
 	if err != nil {
 		return nil, err
 	}
-	return []domain.Evidence{newEvidence(binding.ID, "metric", window.End, "cms:DescribeMetricList", "cms:DescribeMetricList", "Read-only CloudMonitor metric window retrieved", raw)}, nil
+	return []domain.Evidence{newEvidence(binding.ID, "metric", window.End, "cms:DescribeMetricList", "cms:DescribeMetricList", summarizeECSCPU(raw), raw)}, nil
 }
 
 func (p *AliyunProvider) resolveLogs(ctx context.Context, binding evidence.Binding, selectors evidence.Selectors, window evidence.Window) ([]domain.Evidence, error) {
 	endpointID, err := requiredSelector(selectors, "endpoint_id")
+	if err != nil {
+		return nil, err
+	}
+	instanceID, err := requiredSelector(selectors, "instance_id")
 	if err != nil {
 		return nil, err
 	}
@@ -123,8 +156,8 @@ func (p *AliyunProvider) resolveLogs(ctx context.Context, binding evidence.Bindi
 	default:
 		return nil, fmt.Errorf("unsupported Nginx log template %q", binding.QueryTemplate)
 	}
-	query := "endpoint_id:" + endpointID + " AND log_kind:" + logKind
-	raw, err := p.cloud.Call(ctx, AliyunRequest{Service: "sls", Operation: "GetLogsV2", Query: map[string]string{
+	query := "endpoint_id:\"" + endpointID + "\" AND log_kind:\"" + logKind + "\" AND instance_id:\"" + instanceID + "\""
+	raw, err := p.cloud.Call(ctx, AliyunRequest{Service: "sls", Operation: "GetLogs", Query: map[string]string{
 		"project":  p.config.SLSProject,
 		"logstore": p.config.SLSLogstore,
 	}, Body: map[string]any{
@@ -136,7 +169,108 @@ func (p *AliyunProvider) resolveLogs(ctx context.Context, binding evidence.Bindi
 	if err != nil {
 		return nil, err
 	}
-	return []domain.Evidence{newEvidence(binding.ID, "log", window.End, "sls:GetLogs", "sls:GetLogs", "Read-only Nginx log window retrieved", raw)}, nil
+	return []domain.Evidence{newEvidence(binding.ID, "log", window.End, "sls:GetLogs", "sls:GetLogs", summarizeNginxAccess(raw), raw)}, nil
+}
+
+func summarizeECSCPU(raw []byte) string {
+	var envelope struct {
+		Body map[string]json.RawMessage `json:"body"`
+	}
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		return "云监控 ECS CPU：已读取时间窗数据，统计解析失败"
+	}
+	datapoints, found := envelope.Body["Datapoints"]
+	if !found {
+		return "云监控 ECS CPU：已读取时间窗数据，未返回数据点字段"
+	}
+	var encoded string
+	if err := json.Unmarshal(datapoints, &encoded); err != nil {
+		return "云监控 ECS CPU：已读取时间窗数据，数据点格式无法解析"
+	}
+	var points []map[string]any
+	if err := json.Unmarshal([]byte(encoded), &points); err != nil {
+		return "云监控 ECS CPU：已读取时间窗数据，数据点格式无法解析"
+	}
+	if len(points) == 0 {
+		return "云监控 ECS CPU：0 个数据点"
+	}
+
+	var averages, maximums, minimums []float64
+	for _, point := range points {
+		if value, ok := numberValue(point["Average"]); ok {
+			averages = append(averages, value)
+		}
+		if value, ok := numberValue(point["Maximum"]); ok {
+			maximums = append(maximums, value)
+		}
+		if value, ok := numberValue(point["Minimum"]); ok {
+			minimums = append(minimums, value)
+		}
+	}
+	if len(averages) == 0 || len(maximums) == 0 || len(minimums) == 0 {
+		return fmt.Sprintf("云监控 ECS CPU：%d 个数据点，缺少完整聚合值", len(points))
+	}
+	return fmt.Sprintf("云监控 ECS CPU：%d 个数据点，平均值 %.2f%%，最大值 %.2f%%，最小值 %.2f%%", len(points), average(averages), maximum(maximums), minimum(minimums))
+}
+
+func summarizeNginxAccess(raw []byte) string {
+	var envelope struct {
+		Body []map[string]any `json:"body"`
+	}
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		return "Nginx access 日志：已读取时间窗数据，统计解析失败"
+	}
+	count5xx := 0
+	for _, entry := range envelope.Body {
+		for _, key := range []string{"http_code", "status", "status_code"} {
+			status, ok := numberValue(entry[key])
+			if ok && status >= 500 && status < 600 {
+				count5xx++
+				break
+			}
+		}
+	}
+	return fmt.Sprintf("Nginx access 日志：%d 条，5xx 响应 %d 条", len(envelope.Body), count5xx)
+}
+
+func numberValue(value any) (float64, bool) {
+	switch typed := value.(type) {
+	case float64:
+		return typed, true
+	case string:
+		parsed, err := strconv.ParseFloat(typed, 64)
+		return parsed, err == nil
+	default:
+		return 0, false
+	}
+}
+
+func average(values []float64) float64 {
+	total := 0.0
+	for _, value := range values {
+		total += value
+	}
+	return total / float64(len(values))
+}
+
+func maximum(values []float64) float64 {
+	result := values[0]
+	for _, value := range values[1:] {
+		if value > result {
+			result = value
+		}
+	}
+	return result
+}
+
+func minimum(values []float64) float64 {
+	result := values[0]
+	for _, value := range values[1:] {
+		if value < result {
+			result = value
+		}
+	}
+	return result
 }
 
 func (p *AliyunProvider) resolveChanges(ctx context.Context, binding evidence.Binding, selectors evidence.Selectors, window evidence.Window) ([]domain.Evidence, error) {

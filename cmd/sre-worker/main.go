@@ -21,7 +21,7 @@ import (
 
 const (
 	defaultConfigPath = "/etc/sre-rca/sre.yaml"
-	feishuBaseURL     = "https://open.feishu.cn"
+	feishuBaseURL     = "https://open.feishu.cn/open-apis"
 )
 
 type runOneWorker interface {

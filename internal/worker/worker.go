@@ -40,7 +40,7 @@ type Evidence interface {
 }
 
 type Investigator interface {
-	Run(context.Context, string) (domain.RCAResult, error)
+	Run(context.Context, string, []cc.EvidenceCollection) (domain.RCAResult, error)
 }
 
 type Worker struct {
@@ -111,7 +111,7 @@ func (w *Worker) RunOne(ctx context.Context) error {
 		return w.fail(ctx, incident, job, err)
 	}
 
-	evidenceItems, err := w.collectEvidence(ctx, incident.ID)
+	collections, evidenceItems, err := w.collectEvidence(ctx, incident.ID)
 	if err != nil {
 		return w.fail(ctx, incident, job, err)
 	}
@@ -121,7 +121,7 @@ func (w *Worker) RunOne(ctx context.Context) error {
 		}
 		return w.persistenceFailure(ctx, job, err)
 	}
-	result, err := w.runner.Run(ctx, incident.ID)
+	result, err := w.runner.Run(ctx, incident.ID, collections)
 	if err != nil {
 		return w.fail(ctx, incident, job, err)
 	}
@@ -165,17 +165,27 @@ func (w *Worker) RunOne(ctx context.Context) error {
 	return nil
 }
 
-func (w *Worker) collectEvidence(ctx context.Context, incidentID string) ([]domain.Evidence, error) {
-	queries := []func(context.Context, string) ([]domain.Evidence, error){w.evidence.Context, w.evidence.Metrics, w.evidence.Logs, w.evidence.Changes}
+func (w *Worker) collectEvidence(ctx context.Context, incidentID string) ([]cc.EvidenceCollection, []domain.Evidence, error) {
+	queries := []struct {
+		form  string
+		query func(context.Context, string) ([]domain.Evidence, error)
+	}{
+		{form: "incident context", query: w.evidence.Context},
+		{form: "metrics query", query: w.evidence.Metrics},
+		{form: "logs query", query: w.evidence.Logs},
+		{form: "changes query", query: w.evidence.Changes},
+	}
+	collections := make([]cc.EvidenceCollection, 0, len(queries))
 	var all []domain.Evidence
 	for _, query := range queries {
-		items, err := query(ctx, incidentID)
+		items, err := query.query(ctx, incidentID)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
+		collections = append(collections, cc.EvidenceCollection{Form: query.form, Evidence: items})
 		all = append(all, items...)
 	}
-	return all, nil
+	return collections, all, nil
 }
 
 func (w *Worker) fail(ctx context.Context, incident domain.Incident, job domain.Job, cause error) error {

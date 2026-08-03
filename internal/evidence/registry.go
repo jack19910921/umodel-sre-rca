@@ -24,7 +24,7 @@ var allowedSelectors = map[string]bool{
 }
 
 var allowedTemplates = map[string]map[string]bool{
-	"aliyun.umodel":          {"endpoint_context_v1": true},
+	"aliyun.umodel":          {"endpoint_context_v1": true, "endpoint_topology_v1": true},
 	"aliyun.synthetic_probe": {"availability_window_v1": true},
 	"aliyun.cloudmonitor":    {"ecs_normal_state_window_v1": true},
 	"aliyun.sls":             {"nginx_access_by_window_v1": true, "nginx_error_by_window_v1": true},

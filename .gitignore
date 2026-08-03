@@ -1,2 +1,4 @@
 .worktrees/
 dist/
+.DS_Store
+/*.tar.gz

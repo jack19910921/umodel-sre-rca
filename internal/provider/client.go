@@ -4,12 +4,16 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"regexp"
+	"strconv"
 
 	openapi "github.com/alibabacloud-go/darabonba-openapi/v2/client"
 	sls "github.com/alibabacloud-go/sls-20201230/v6/client"
 	"github.com/alibabacloud-go/tea/dara"
 	"github.com/alibabacloud-go/tea/tea"
 )
+
+var entityStoreWorkspacePattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]{0,127}$`)
 
 // AliyunRequest is an internal, fixed-shape request to an approved evidence
 // API. It cannot carry a URL, executable, profile, or credential.
@@ -27,7 +31,7 @@ type AliyunAPI interface {
 
 var allowedActions = map[string]map[string]bool{
 	"cms":         {"GetEntityStoreData": true, "DescribeMetricList": true},
-	"sls":         {"GetLogsV2": true},
+	"sls":         {"GetLogs": true},
 	"actiontrail": {"LookupEvents": true},
 }
 
@@ -64,6 +68,7 @@ func NewAliyunSDKClient(region, ecsRAMRoleName string) (*SDKAliyunClient, error)
 		return nil, fmt.Errorf("create ActionTrail OpenAPI client: %w", err)
 	}
 	slsClient, err := sls.NewClient(&openapi.Config{
+		Endpoint:   tea.String(fmt.Sprintf("%s.log.aliyuncs.com", region)),
 		RegionId:   tea.String(region),
 		Credential: credential,
 	})
@@ -79,11 +84,10 @@ func (c *SDKAliyunClient) Call(ctx context.Context, request AliyunRequest) ([]by
 	}
 	switch request.Service {
 	case "cms":
-		version := "2019-01-01"
 		if request.Operation == "GetEntityStoreData" {
-			version = "2024-03-30"
+			return callEntityStoreData(ctx, c.cms, request.Query)
 		}
-		return callRPC(ctx, c.cms, request.Operation, version, request.Query)
+		return callRPC(ctx, c.cms, request.Operation, "2019-01-01", request.Query)
 	case "actiontrail":
 		return callRPC(ctx, c.actionTrail, request.Operation, "2020-07-06", request.Query)
 	case "sls":
@@ -91,6 +95,55 @@ func (c *SDKAliyunClient) Call(ctx context.Context, request AliyunRequest) ([]by
 	default:
 		return nil, fmt.Errorf("unsupported cloud service %q", request.Service)
 	}
+}
+
+func callEntityStoreData(ctx context.Context, client *openapi.Client, values map[string]string) ([]byte, error) {
+	params, request, err := buildEntityStoreDataRequest(values)
+	if err != nil {
+		return nil, err
+	}
+	response, err := client.CallApiWithCtx(ctx, params, request, &dara.RuntimeOptions{})
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(response)
+}
+
+func buildEntityStoreDataRequest(values map[string]string) (*openapi.Params, *openapi.OpenApiRequest, error) {
+	workspace := values["Workspace"]
+	if !entityStoreWorkspacePattern.MatchString(workspace) {
+		return nil, nil, fmt.Errorf("safe EntityStore workspace is required")
+	}
+	from, err := strconv.ParseInt(values["From"], 10, 64)
+	if err != nil {
+		return nil, nil, fmt.Errorf("valid EntityStore from time is required: %w", err)
+	}
+	to, err := strconv.ParseInt(values["To"], 10, 64)
+	if err != nil {
+		return nil, nil, fmt.Errorf("valid EntityStore to time is required: %w", err)
+	}
+	if to <= from {
+		return nil, nil, fmt.Errorf("EntityStore to time must be after from time")
+	}
+	query := values["Query"]
+	if query == "" {
+		return nil, nil, fmt.Errorf("EntityStore query is required")
+	}
+	return &openapi.Params{
+			Action:      tea.String("GetEntityStoreData"),
+			Version:     tea.String("2024-03-30"),
+			Protocol:    tea.String("HTTPS"),
+			Pathname:    tea.String("/workspace/" + workspace + "/entitiesAndRelations"),
+			Method:      tea.String("POST"),
+			AuthType:    tea.String("AK"),
+			Style:       tea.String("ROA"),
+			ReqBodyType: tea.String("json"),
+			BodyType:    tea.String("json"),
+		}, &openapi.OpenApiRequest{Body: map[string]any{
+			"from":  from,
+			"to":    to,
+			"query": query,
+		}}, nil
 }
 
 func callRPC(ctx context.Context, client *openapi.Client, action, version string, values map[string]string) ([]byte, error) {
@@ -115,26 +168,37 @@ func callRPC(ctx context.Context, client *openapi.Client, action, version string
 	return json.Marshal(response)
 }
 
-func callSLS(ctx context.Context, client *sls.Client, request AliyunRequest) ([]byte, error) {
+func callSLS(_ context.Context, client *sls.Client, request AliyunRequest) ([]byte, error) {
+	if request.Operation != "GetLogs" {
+		return nil, fmt.Errorf("unsupported SLS operation %q", request.Operation)
+	}
 	project := request.Query["project"]
 	logstore := request.Query["logstore"]
 	if project == "" || logstore == "" {
 		return nil, fmt.Errorf("SLS project and logstore are required")
 	}
-	response, err := client.CallApiWithCtx(ctx, &openapi.Params{
-		Action:      tea.String("GetLogsV2"),
-		Version:     tea.String("2020-12-30"),
-		Protocol:    tea.String("HTTPS"),
-		Pathname:    tea.String("/logstores/" + logstore + "/logs"),
-		Method:      tea.String("POST"),
-		AuthType:    tea.String("AK"),
-		Style:       tea.String("ROA"),
-		ReqBodyType: tea.String("json"),
-		BodyType:    tea.String("json"),
-	}, &openapi.OpenApiRequest{
-		HostMap: map[string]*string{"project": tea.String(project)},
-		Body:    request.Body,
-	}, &dara.RuntimeOptions{})
+	from, ok := request.Body["from"].(int32)
+	if !ok {
+		return nil, fmt.Errorf("SLS from time is required")
+	}
+	to, ok := request.Body["to"].(int32)
+	if !ok {
+		return nil, fmt.Errorf("SLS to time is required")
+	}
+	query, ok := request.Body["query"].(string)
+	if !ok {
+		return nil, fmt.Errorf("SLS query is required")
+	}
+	line, ok := request.Body["line"].(int64)
+	if !ok {
+		return nil, fmt.Errorf("SLS line limit is required")
+	}
+	response, err := client.GetLogs(tea.String(project), tea.String(logstore), &sls.GetLogsRequest{
+		From:  tea.Int32(from),
+		To:    tea.Int32(to),
+		Query: tea.String(query),
+		Line:  tea.Int64(line),
+	})
 	if err != nil {
 		return nil, err
 	}

@@ -23,6 +23,9 @@ var (
 	newSchemaInspector = func(region, ecsRAMRoleName string) (modelsync.SchemaInspector, error) {
 		return modelsync.NewCMSWriter(region, ecsRAMRoleName)
 	}
+	newRelationInspector = func(region, ecsRAMRoleName string) (modelsync.RelationInspector, error) {
+		return modelsync.NewCMSWriter(region, ecsRAMRoleName)
+	}
 )
 
 func main() {
@@ -35,6 +38,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 	configPath := flags.String("config", "", "absolute path to the SRE sync YAML file")
 	apply := flags.Bool("apply", false, "write the plan to UModel (default is dry-run)")
 	inspectSchema := flags.Bool("inspect-schema", false, "read the UModel graph for the SRE domain without writing data")
+	inspectRelation := flags.Bool("inspect-relation", false, "verify the configured SRE-to-ECS relation without writing data")
+	expireRelationType := flags.String("expire-relation-type", "", "expire exactly one configured endpoint-to-ECS relation type (default is dry-run)")
 	if err := flags.Parse(args); err != nil {
 		return 2
 	}
@@ -42,8 +47,18 @@ func run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "usage: sre-sync --config /absolute/path/to/sre-sync.yaml [--apply | --inspect-schema]")
 		return 2
 	}
-	if *apply && *inspectSchema {
-		fmt.Fprintln(stderr, "--apply and --inspect-schema cannot be used together")
+	operationCount := 0
+	for _, enabled := range []bool{*apply, *inspectSchema, *inspectRelation} {
+		if enabled {
+			operationCount++
+		}
+	}
+	if operationCount > 1 {
+		fmt.Fprintln(stderr, "--apply, --inspect-schema, and --inspect-relation are mutually exclusive")
+		return 2
+	}
+	if *expireRelationType != "" && (*inspectSchema || *inspectRelation) {
+		fmt.Fprintln(stderr, "--expire-relation-type cannot be combined with inspection flags")
 		return 2
 	}
 
@@ -75,15 +90,58 @@ func run(args []string, stdout, stderr io.Writer) int {
 		}
 		return 0
 	}
-	plan := modelsync.Plan{}
-	observedAt := time.Now().UTC()
-	for _, endpoint := range cfg.Endpoints {
-		endpointPlan, err := modelsync.BuildPlan(endpoint, cfg.Relation, observedAt)
-		if err != nil {
-			fmt.Fprintf(stderr, "build plan: %v\n", err)
+	if *inspectRelation {
+		if len(cfg.Endpoints) != 1 {
+			fmt.Fprintln(stderr, "inspect relation: exactly one endpoint must be configured")
 			return 1
 		}
-		plan.Elements = append(plan.Elements, endpointPlan.Elements...)
+		inspector, err := newRelationInspector(cfg.Region, cfg.ECSRAMRoleName)
+		if err != nil {
+			fmt.Fprintf(stderr, "create UModel relation inspector: %v\n", err)
+			return 1
+		}
+		result, err := inspector.InspectRelation(context.Background(), cfg.Workspace, cfg.Endpoints[0], cfg.Relation)
+		if err != nil {
+			fmt.Fprintf(stderr, "inspect UModel relation: %v\n", err)
+			return 1
+		}
+		if err := json.NewEncoder(stdout).Encode(map[string]any{
+			"mode":          "relation-inspection",
+			"workspace":     cfg.Workspace,
+			"region":        cfg.Region,
+			"endpoint_id":   cfg.Endpoints[0].EndpointID,
+			"relation_type": cfg.Relation.Type,
+			"result":        result,
+		}); err != nil {
+			fmt.Fprintf(stderr, "encode result: %v\n", err)
+			return 1
+		}
+		return 0
+	}
+	observedAt := time.Now().UTC()
+	plan := modelsync.Plan{}
+	operation := "sync"
+	if *expireRelationType != "" {
+		if len(cfg.Endpoints) != 1 {
+			fmt.Fprintln(stderr, "expire relation: exactly one endpoint must be configured")
+			return 1
+		}
+		expiryPlan, err := modelsync.BuildRelationExpirationPlan(cfg.Endpoints[0], *expireRelationType, observedAt)
+		if err != nil {
+			fmt.Fprintf(stderr, "build relation expiry plan: %v\n", err)
+			return 1
+		}
+		plan = expiryPlan
+		operation = "expire-relation"
+	} else {
+		for _, endpoint := range cfg.Endpoints {
+			endpointPlan, err := modelsync.BuildPlan(endpoint, cfg.Relation, observedAt)
+			if err != nil {
+				fmt.Fprintf(stderr, "build plan: %v\n", err)
+				return 1
+			}
+			plan.Elements = append(plan.Elements, endpointPlan.Elements...)
+		}
 	}
 
 	mode := "dry-run"
@@ -101,11 +159,12 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 
 	result := map[string]any{
+		"operation":        operation,
 		"mode":             mode,
 		"workspace":        cfg.Workspace,
 		"region":           cfg.Region,
 		"element_count":    len(plan.Elements),
-		"relation_enabled": cfg.Relation.Type != "",
+		"relation_enabled": operation == "sync" && cfg.Relation.Type != "",
 		"elements":         plan.Elements,
 	}
 	if err := json.NewEncoder(stdout).Encode(result); err != nil {

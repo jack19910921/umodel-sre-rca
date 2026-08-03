@@ -18,6 +18,13 @@ func TestValidateWorkerConfigRejectsMissingFeishuDeliveryConfig(t *testing.T) {
 	}
 }
 
+func TestFeishuBaseURLIncludesOpenAPIPrefix(t *testing.T) {
+	const want = "https://open.feishu.cn/open-apis"
+	if feishuBaseURL != want {
+		t.Fatalf("feishuBaseURL = %q, want %q", feishuBaseURL, want)
+	}
+}
+
 func TestRunLoopGivesEveryWorkerCallABoundedContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

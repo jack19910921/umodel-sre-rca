@@ -2,6 +2,7 @@ package feishu
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -37,5 +38,43 @@ func TestRenderCardDoesNotIncludeOversizedOrSensitiveContent(t *testing.T) {
 	card, err := RenderIncidentCard(domain.Incident{ID: "inc-1", State: domain.IncidentCompleted}, domain.RCAResult{Summary: strings.Repeat("x", 40_000), Confidence: 0.9, RootCause: "security group", EvidenceIDs: []string{"ev-1"}})
 	if err == nil || card != nil {
 		t.Fatalf("card=%v err=%v", card, err)
+	}
+}
+
+func TestRenderIncidentCardUsesLarkMarkdownDivsForIncidentFields(t *testing.T) {
+	card, err := RenderIncidentCard(domain.Incident{ID: "inc-1", State: domain.IncidentReceived}, domain.RCAResult{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded struct {
+		Elements []struct {
+			Tag  string `json:"tag"`
+			Text struct {
+				Tag     string `json:"tag"`
+				Content string `json:"content"`
+			} `json:"text"`
+		} `json:"elements"`
+	}
+	if err := json.Unmarshal(card, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if len(decoded.Elements) < 2 {
+		t.Fatalf("elements = %d, want at least 2", len(decoded.Elements))
+	}
+	for index, want := range []string{"**事件**\ninc-1", "**状态**\n已接收"} {
+		got := decoded.Elements[index]
+		if got.Tag != "div" || got.Text.Tag != "lark_md" || got.Text.Content != want {
+			t.Fatalf("element %d = %#v, want lark_md div containing %q", index, got, want)
+		}
+	}
+}
+
+func TestRenderIncidentCardLocalizesHeaderState(t *testing.T) {
+	card, err := RenderIncidentCard(domain.Incident{ID: "inc-1", State: domain.IncidentAwaitingAuditEvent}, domain.RCAResult{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(card), "SRE RCA · 等待审计事件") {
+		t.Fatalf("card header is not localized: %s", card)
 	}
 }

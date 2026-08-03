@@ -51,7 +51,7 @@ bindings:
     target: sre.service_endpoint
     provider: aliyun.sls
     query_template: nginx_access_by_window_v1
-    selector_mapping: {endpoint_id: endpoint_id}
+    selector_mapping: {endpoint_id: endpoint_id, instance_id: instance_id}
   - id: changes
     evidence_class: changes
     target: acs.ecs.securitygroup
@@ -100,6 +100,42 @@ incident_bindings:
 	}
 	if _, err := service.Changes(context.Background(), "incident-1"); err != nil {
 		t.Fatalf("Changes() error = %v", err)
+	}
+}
+
+func TestNewEvidenceServiceAllowsManualReadOnlyEvidenceWhenWorkerIsDisabled(t *testing.T) {
+	dir := t.TempDir()
+	writeRuntimeFixture(t, filepath.Join(dir, "bindings.yaml"), `
+bindings:
+  - id: topology
+    evidence_class: context
+    target: sre.service_endpoint
+    provider: aliyun.umodel
+    query_template: endpoint_topology_v1
+    selector_mapping: {endpoint_id: endpoint_id}
+`)
+	writeRuntimeFixture(t, filepath.Join(dir, "incident-bindings.yaml"), `
+incident_bindings:
+  - workspace: ws
+    rule_id: rule
+    resource_id: resource
+    selectors: {endpoint_id: blog-http}
+`)
+	cfg := config.Config{EvidenceBindingsPath: filepath.Join(dir, "bindings.yaml"), IncidentBindingsPath: filepath.Join(dir, "incident-bindings.yaml")}
+	cfg.Aliyun.ECSRAMRoleName = "sre-rca"
+	cfg.Aliyun.Workspace = "workspace"
+	cfg.Aliyun.Region = "cn-hangzhou"
+
+	oldFactory := newAliyunEvidenceClient
+	defer func() { newAliyunEvidenceClient = oldFactory }()
+	newAliyunEvidenceClient = func(string, string) (provider.AliyunAPI, error) { return fakeRuntimeCloud{}, nil }
+
+	service, err := NewEvidenceService(cfg, fakeEvidenceRepository{fakeIncidentRepository{incident: domain.Incident{ID: "incident-1", Workspace: "ws", RuleID: "rule", ResourceID: "resource", AlertAt: time.Now().UTC()}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Context(context.Background(), "incident-1"); err != nil {
+		t.Fatalf("Context() error = %v", err)
 	}
 }
 

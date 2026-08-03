@@ -15,14 +15,15 @@ type evidenceRepository interface {
 	OpenEvidence(context.Context, string) (domain.Evidence, error)
 }
 
-// NewEvidenceService creates the fixed, customer-hosted evidence path. Its
-// provider registry is intentionally static: no callback payload can select a
-// URL, command, credential, or arbitrary cloud API.
+var newAliyunEvidenceClient = func(region, ecsRAMRoleName string) (provider.AliyunAPI, error) {
+	return provider.NewAliyunSDKClient(region, ecsRAMRoleName)
+}
+
+// NewEvidenceService creates the fixed, customer-hosted evidence path for the
+// worker and the manually-invoked, read-only evidence CLI. The worker itself
+// retains its separate worker.enabled start gate.
 func NewEvidenceService(cfg config.Config, repo evidenceRepository) (*evidence.Service, error) {
-	if !cfg.Worker.Enabled {
-		return nil, fmt.Errorf("worker runtime composition is disabled")
-	}
-	cloud, err := provider.NewAliyunSDKClient(cfg.Aliyun.Region, cfg.Aliyun.ECSRAMRoleName)
+	cloud, err := newAliyunEvidenceClient(cfg.Aliyun.Region, cfg.Aliyun.ECSRAMRoleName)
 	if err != nil {
 		return nil, err
 	}

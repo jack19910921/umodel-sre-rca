@@ -120,7 +120,8 @@ func (c *Client) doJSON(ctx context.Context, method, path, token string, body, o
 
 func RenderIncidentCard(incident domain.Incident, result domain.RCAResult) ([]byte, error) {
 	elements := []map[string]any{
-		{"tag": "div", "fields": []map[string]string{{"is_short": "true", "text": "**Incident**\n" + incident.ID}, {"is_short": "true", "text": "**状态**\n" + incident.State}}},
+		{"tag": "div", "text": map[string]string{"tag": "lark_md", "content": "**事件**\n" + incident.ID}},
+		{"tag": "div", "text": map[string]string{"tag": "lark_md", "content": "**状态**\n" + localizedState(incident.State)}},
 	}
 	if result.Summary != "" {
 		elements = append(elements, map[string]any{"tag": "div", "text": map[string]string{"tag": "lark_md", "content": "**结论**\n" + result.Summary}})
@@ -134,7 +135,7 @@ func RenderIncidentCard(incident domain.Incident, result domain.RCAResult) ([]by
 	}
 	card := map[string]any{
 		"config":   map[string]bool{"wide_screen_mode": true},
-		"header":   map[string]any{"title": map[string]string{"tag": "plain_text", "content": "SRE RCA · " + incident.State}, "template": cardTemplate(incident.State)},
+		"header":   map[string]any{"title": map[string]string{"tag": "plain_text", "content": "SRE RCA · " + localizedState(incident.State)}, "template": cardTemplate(incident.State)},
 		"elements": elements,
 	}
 	raw, err := json.Marshal(card)
@@ -145,6 +146,25 @@ func RenderIncidentCard(incident domain.Incident, result domain.RCAResult) ([]by
 		return nil, fmt.Errorf("Feishu card is %d bytes; maximum is %d", len(raw), maxCardBytes)
 	}
 	return raw, nil
+}
+
+func localizedState(state string) string {
+	switch state {
+	case domain.IncidentReceived:
+		return "已接收"
+	case domain.IncidentInvestigating:
+		return "调查中"
+	case domain.IncidentAwaitingAuditEvent:
+		return "等待审计事件"
+	case domain.IncidentCompleted:
+		return "已完成"
+	case domain.IncidentFailed:
+		return "调查失败"
+	case domain.IncidentRecovered:
+		return "已恢复"
+	default:
+		return state
+	}
 }
 
 func cardTemplate(state string) string {

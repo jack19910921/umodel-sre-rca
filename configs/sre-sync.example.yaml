@@ -7,9 +7,10 @@ workspace: default-cms-1876202723954089-cn-hangzhou
 region: cn-hangzhou
 ecs_ram_role_name: sre-rca
 
-# Leave type empty until the EntitySetLink schema has been confirmed in UModel
-# Explorer. The type must match the persisted schema exactly (for example,
-# `related_to` or `runs_on`), not merely a label shown in the graph UI.
+# Leave type empty until the EntitySetLink schema and scoped `__topo` write
+# permission have both been confirmed. The type must match the persisted schema
+# exactly (for this endpoint-to-ECS link: `runs_on`), not merely a graph UI
+# label.
 relation:
   type: ""
   destination_domain: acs

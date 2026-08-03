@@ -24,6 +24,22 @@ type recordedInspector struct {
 	result    map[string]any
 }
 
+type recordedRelationInspector struct {
+	called    bool
+	workspace string
+	endpoint  modelsync.Endpoint
+	relation  modelsync.Relation
+	result    map[string]any
+}
+
+func (i *recordedRelationInspector) InspectRelation(_ context.Context, workspace string, endpoint modelsync.Endpoint, relation modelsync.Relation) (map[string]any, error) {
+	i.called = true
+	i.workspace = workspace
+	i.endpoint = endpoint
+	i.relation = relation
+	return i.result, nil
+}
+
 func (i *recordedInspector) InspectSchema(_ context.Context, workspace string, domains []string) (map[string]any, error) {
 	i.called = true
 	i.workspace = workspace
@@ -124,12 +140,142 @@ func TestRunInspectSchemaUsesReadOnlyInspector(t *testing.T) {
 	}
 }
 
+func TestRunInspectRelationUsesReadOnlyRelationInspector(t *testing.T) {
+	configPath := writeRelationSyncConfig(t)
+	inspector := &recordedRelationInspector{result: map[string]any{"properties": []any{"acs.ecs.instance"}}}
+	oldFactory := newRelationInspector
+	defer func() { newRelationInspector = oldFactory }()
+	newRelationInspector = func(region, role string) (modelsync.RelationInspector, error) {
+		if region != "cn-hangzhou" || role != "sre-rca" {
+			t.Fatalf("inspector args = %q, %q", region, role)
+		}
+		return inspector, nil
+	}
+
+	var stdout, stderr bytes.Buffer
+	if got := run([]string{"--config", configPath, "--inspect-relation"}, &stdout, &stderr); got != 0 {
+		t.Fatalf("run() = %d, stderr = %s", got, stderr.String())
+	}
+	if !inspector.called {
+		t.Fatal("relation inspector was not called")
+	}
+	if got, want := inspector.workspace, "default-cms-1876202723954089-cn-hangzhou"; got != want {
+		t.Errorf("workspace = %q, want %q", got, want)
+	}
+	if got, want := inspector.relation.Type, "related_to"; got != want {
+		t.Errorf("relation type = %q, want %q", got, want)
+	}
+	var result map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+		t.Fatalf("decode output: %v", err)
+	}
+	if got, want := result["mode"], "relation-inspection"; got != want {
+		t.Errorf("mode = %q, want %q", got, want)
+	}
+}
+
+func TestRunExpireRelationDryRunProducesOnlyAnExpireTopologyRecord(t *testing.T) {
+	configPath := writeRelationSyncConfig(t)
+	oldFactory := newWriter
+	defer func() { newWriter = oldFactory }()
+	newWriter = func(string, string) (modelsync.Writer, error) {
+		t.Fatal("newWriter must not be called in expire relation dry-run mode")
+		return nil, nil
+	}
+
+	var stdout, stderr bytes.Buffer
+	if got := run([]string{"--config", configPath, "--expire-relation-type", "related_to"}, &stdout, &stderr); got != 0 {
+		t.Fatalf("run() = %d, stderr = %s", got, stderr.String())
+	}
+	var result map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
+		t.Fatalf("decode output: %v", err)
+	}
+	if got, want := result["mode"], "dry-run"; got != want {
+		t.Errorf("mode = %q, want %q", got, want)
+	}
+	if got, want := result["operation"], "expire-relation"; got != want {
+		t.Errorf("operation = %q, want %q", got, want)
+	}
+	if got, want := int(result["element_count"].(float64)), 1; got != want {
+		t.Errorf("element_count = %d, want %d", got, want)
+	}
+	elements := result["elements"].([]any)
+	relation := elements[0].(map[string]any)
+	if got, want := relation["__method__"], "Expire"; got != want {
+		t.Errorf("method = %q, want %q", got, want)
+	}
+	if _, found := relation["__domain__"]; found {
+		t.Error("expiry output must not contain an entity record")
+	}
+}
+
+func TestRunApplyExpireRelationWritesOnlyTheExpireTopologyRecord(t *testing.T) {
+	configPath := writeRelationSyncConfig(t)
+	writer := &recordedWriter{}
+	oldFactory := newWriter
+	defer func() { newWriter = oldFactory }()
+	newWriter = func(region, role string) (modelsync.Writer, error) {
+		if region != "cn-hangzhou" || role != "sre-rca" {
+			t.Fatalf("writer args = %q, %q", region, role)
+		}
+		return writer, nil
+	}
+
+	var stdout, stderr bytes.Buffer
+	if got := run([]string{"--config", configPath, "--expire-relation-type", "related_to", "--apply"}, &stdout, &stderr); got != 0 {
+		t.Fatalf("run() = %d, stderr = %s", got, stderr.String())
+	}
+	if !writer.called {
+		t.Fatal("writer was not called")
+	}
+	if got, want := len(writer.plan.Elements), 1; got != want {
+		t.Fatalf("writer element count = %d, want %d", got, want)
+	}
+	relation := writer.plan.Elements[0]
+	if got, want := relation["__method__"], "Expire"; got != want {
+		t.Errorf("writer method = %q, want %q", got, want)
+	}
+	if got, want := relation["__relation_type__"], "related_to"; got != want {
+		t.Errorf("writer relation type = %q, want %q", got, want)
+	}
+	if _, found := relation["__domain__"]; found {
+		t.Error("writer must receive no entity record")
+	}
+}
+
 func TestRunRejectsApplyAndInspectSchemaTogether(t *testing.T) {
 	configPath := writeSyncConfig(t)
 	var stdout, stderr bytes.Buffer
 	if got := run([]string{"--config", configPath, "--apply", "--inspect-schema"}, &stdout, &stderr); got != 2 {
 		t.Fatalf("run() = %d, want 2; stderr = %s", got, stderr.String())
 	}
+}
+
+func writeRelationSyncConfig(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "sre-sync.yaml")
+	raw := `workspace: default-cms-1876202723954089-cn-hangzhou
+region: cn-hangzhou
+ecs_ram_role_name: sre-rca
+relation:
+  type: related_to
+  destination_domain: acs
+  destination_entity_type: acs.ecs.instance
+endpoints:
+  - endpoint_id: blog-http
+    service_name: blog
+    service_url: https://jack-sre.com/
+    environment: prod
+    instance_id: i-bp17eb4oiqsmy10fq9mu
+    ecs_entity_id: d713389806398932cf6b1ff1eaa86a8b
+    region_id: cn-hangzhou
+    account_id: "1876202723954089"
+`
+	if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }
 
 func writeSyncConfig(t *testing.T) string {

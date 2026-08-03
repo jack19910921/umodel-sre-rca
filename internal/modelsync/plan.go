@@ -4,12 +4,12 @@
 package modelsync
 
 import (
-	"crypto/md5"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/jack/umodel-sre-rca/internal/umodelid"
 )
 
 const (
@@ -66,7 +66,7 @@ func BuildPlan(endpoint Endpoint, relation Relation, observedAt time.Time) (Plan
 		return Plan{}, errors.New("observed time is required")
 	}
 
-	endpointID := deterministicEntityID(endpoint.EndpointID)
+	endpointID := EndpointEntityID(endpoint.EndpointID)
 	observedAt = observedAt.UTC()
 	observedAtUnix := observedAt.Unix()
 	entity := map[string]any{
@@ -117,9 +117,45 @@ func BuildPlan(endpoint Endpoint, relation Relation, observedAt time.Time) (Plan
 	return plan, nil
 }
 
+// BuildRelationExpirationPlan produces only the explicitly named directed
+// topology relation with the documented Expire lifecycle method. It never
+// includes an endpoint entity element, so an expiry operation cannot refresh
+// or alter custom SRE entity data.
+func BuildRelationExpirationPlan(endpoint Endpoint, relationType string, observedAt time.Time) (Plan, error) {
+	if strings.TrimSpace(endpoint.EndpointID) == "" {
+		return Plan{}, errors.New("endpoint_id is required")
+	}
+	if strings.TrimSpace(endpoint.ECSEntityID) == "" {
+		return Plan{}, errors.New("ecs_entity_id is required")
+	}
+	if observedAt.IsZero() {
+		return Plan{}, errors.New("observed time is required")
+	}
+	if !isSafeRelationType(relationType) {
+		return Plan{}, fmt.Errorf("unsafe relation type %q", relationType)
+	}
+
+	return Plan{Elements: []map[string]any{{
+		"__src_domain__":         sreDomain,
+		"__src_entity_type__":    endpointEntityType,
+		"__src_entity_id__":      EndpointEntityID(endpoint.EndpointID),
+		"__dest_domain__":        acsDomain,
+		"__dest_entity_type__":   ecsEntityType,
+		"__dest_entity_id__":     endpoint.ECSEntityID,
+		"__relation_type__":      relationType,
+		"__method__":             "Expire",
+		"__last_observed_time__": observedAt.UTC().Unix(),
+	}}}, nil
+}
+
 func deterministicEntityID(endpointID string) string {
-	sum := md5.Sum([]byte(sreDomain + ":" + endpointEntityType + ":" + endpointID))
-	return hex.EncodeToString(sum[:])
+	return EndpointEntityID(endpointID)
+}
+
+// EndpointEntityID is the stable EntityStore identity shared by the static
+// SRE endpoint projection and read-only topology evidence queries.
+func EndpointEntityID(endpointID string) string {
+	return umodelid.EndpointEntityID(endpointID)
 }
 
 func isSafeRelationType(value string) bool {

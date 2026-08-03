@@ -54,12 +54,14 @@ var fixedEvidenceForms = [][]string{
 	{"changes", "query"},
 }
 
-type evidenceCollection struct {
+// EvidenceCollection is the immutable evidence set that is both shown to
+// Claude and later used to validate every cited evidence ID.
+type EvidenceCollection struct {
 	Form     string            `json:"form"`
 	Evidence []domain.Evidence `json:"evidence"`
 }
 
-func (r Runner) Run(ctx context.Context, incidentID string) (domain.RCAResult, error) {
+func (r Runner) Run(ctx context.Context, incidentID string, collections []EvidenceCollection) (domain.RCAResult, error) {
 	if !isSafeIncidentID(incidentID) {
 		return domain.RCAResult{}, fmt.Errorf("incident id is required and must be a safe reference")
 	}
@@ -67,10 +69,6 @@ func (r Runner) Run(ctx context.Context, incidentID string) (domain.RCAResult, e
 	runCtx, cancel := context.WithTimeout(ctx, r.timeout())
 	defer cancel()
 
-	collections, err := r.collectEvidence(runCtx, incidentID)
-	if err != nil {
-		return domain.RCAResult{}, err
-	}
 	command, _, commandCancel, err := r.prepareClaudeCommand(runCtx, incidentID, collections)
 	if err != nil {
 		return domain.RCAResult{}, err
@@ -95,34 +93,6 @@ func (r Runner) Run(ctx context.Context, incidentID string) (domain.RCAResult, e
 	return result, nil
 }
 
-func (r Runner) collectEvidence(ctx context.Context, incidentID string) ([]evidenceCollection, error) {
-	collections := make([]evidenceCollection, 0, len(fixedEvidenceForms))
-	for _, form := range fixedEvidenceForms {
-		stdout := newBoundedBuffer(r.outputLimit())
-		stderr := newBoundedBuffer(r.outputLimit())
-		command, err := r.prepareEvidenceCommand(ctx, form, incidentID)
-		if err != nil {
-			return nil, err
-		}
-		command.Stdout = stdout
-		command.Stderr = stderr
-		if err := command.Run(); err != nil {
-			if ctx.Err() != nil {
-				err = ctx.Err()
-			}
-			return nil, fmt.Errorf("collect %s evidence: %w (%s; %s)", strings.Join(form, " "), err, stdout.describe("stdout"), stderr.describe("stderr"))
-		}
-		var envelope struct {
-			Evidence []domain.Evidence `json:"evidence"`
-		}
-		if err := json.Unmarshal(stdout.Bytes(), &envelope); err != nil {
-			return nil, fmt.Errorf("decode %s evidence: %w (%s; %s)", strings.Join(form, " "), err, stdout.describe("stdout"), stderr.describe("stderr"))
-		}
-		collections = append(collections, evidenceCollection{Form: strings.Join(form, " "), Evidence: envelope.Evidence})
-	}
-	return collections, nil
-}
-
 func (r Runner) prepareEvidenceCommand(ctx context.Context, form []string, incidentID string) (*exec.Cmd, error) {
 	if !isSafeIncidentID(incidentID) {
 		return nil, fmt.Errorf("incident id is required and must be a safe reference")
@@ -135,7 +105,7 @@ func (r Runner) prepareEvidenceCommand(ctx context.Context, form []string, incid
 	return command, nil
 }
 
-func (r Runner) prepareClaudeCommand(ctx context.Context, incidentID string, collections []evidenceCollection) (*exec.Cmd, context.Context, context.CancelFunc, error) {
+func (r Runner) prepareClaudeCommand(ctx context.Context, incidentID string, collections []EvidenceCollection) (*exec.Cmd, context.Context, context.CancelFunc, error) {
 	if !isSafeIncidentID(incidentID) {
 		return nil, nil, nil, fmt.Errorf("incident id is required and must be a safe reference")
 	}
@@ -187,7 +157,7 @@ func isFixedEvidenceForm(form []string) bool {
 	return false
 }
 
-func buildPrompt(incidentID string, collections []evidenceCollection) (string, error) {
+func buildPrompt(incidentID string, collections []EvidenceCollection) (string, error) {
 	if !isSafeIncidentID(incidentID) {
 		return "", fmt.Errorf("incident id is required and must be a safe reference")
 	}
@@ -201,12 +171,22 @@ func buildPrompt(incidentID string, collections []evidenceCollection) (string, e
 	}
 	payload, err := json.Marshal(struct {
 		IncidentID string               `json:"incident_id"`
-		Evidence   []evidenceCollection `json:"evidence"`
+		Evidence   []EvidenceCollection `json:"evidence"`
 	}{IncidentID: incidentID, Evidence: collections})
 	if err != nil {
 		return "", fmt.Errorf("encode fixed RCA evidence: %w", err)
 	}
-	return "/rca-investigate\nAnalyze only the supplied fixed evidence JSON. Do not request or use any other tools, commands, URLs, APIs, filesystem data, credentials, or network access.\n" + string(payload), nil
+	allowedEvidenceIDs := make([]string, 0)
+	for _, collection := range collections {
+		for _, item := range collection.Evidence {
+			allowedEvidenceIDs = append(allowedEvidenceIDs, item.ID)
+		}
+	}
+	allowed, err := json.Marshal(allowedEvidenceIDs)
+	if err != nil {
+		return "", fmt.Errorf("encode allowed RCA evidence IDs: %w", err)
+	}
+	return "/rca-investigate\nAnalyze only the supplied fixed evidence JSON. Do not request or use any other tools, commands, URLs, APIs, filesystem data, credentials, or network access.\nUse Simplified Chinese for every human-readable RCA value. Keep only opaque identifiers, URLs, and machine field names unchanged.\nYour evidence_ids must be a non-empty subset of the exact IDs in ALLOWED_EVIDENCE_IDS. Copy IDs verbatim; never hash, transform, infer, or invent an evidence ID.\nALLOWED_EVIDENCE_IDS=" + string(allowed) + "\n" + string(payload), nil
 }
 
 func (r Runner) newCommand(ctx context.Context, name string, args ...string) *exec.Cmd {
@@ -323,7 +303,7 @@ func ParseResult(raw []byte) (domain.RCAResult, error) {
 			Result string `json:"result"`
 		}
 		if err := json.Unmarshal(raw, &envelope); err == nil && envelope.Result != "" {
-			if err := json.Unmarshal([]byte(envelope.Result), &result); err != nil {
+			if err := json.Unmarshal(stripJSONCodeFence(envelope.Result), &result); err != nil {
 				return domain.RCAResult{}, fmt.Errorf("decode RCA result envelope: %w", err)
 			}
 		}
@@ -332,6 +312,18 @@ func ParseResult(raw []byte) (domain.RCAResult, error) {
 		return domain.RCAResult{}, err
 	}
 	return result, nil
+}
+
+func stripJSONCodeFence(value string) []byte {
+	trimmed := strings.TrimSpace(value)
+	if !strings.HasPrefix(trimmed, "```") || !strings.HasSuffix(trimmed, "```") {
+		return []byte(trimmed)
+	}
+	newline := strings.IndexByte(trimmed, '\n')
+	if newline < 0 {
+		return []byte(trimmed)
+	}
+	return []byte(strings.TrimSpace(trimmed[newline+1 : len(trimmed)-3]))
 }
 
 func ValidateResult(result domain.RCAResult, knownEvidence map[string]bool) error {

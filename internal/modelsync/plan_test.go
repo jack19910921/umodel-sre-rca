@@ -91,3 +91,43 @@ func TestBuildPlanRejectsUnsafeCrossDomainTarget(t *testing.T) {
 		t.Fatal("BuildPlan() error = nil, want destination domain rejection")
 	}
 }
+
+func TestBuildRelationExpirationPlanProducesOnlyTheNamedRelation(t *testing.T) {
+	now := time.Date(2026, 7, 31, 0, 12, 13, 0, time.UTC)
+	endpoint := Endpoint{
+		EndpointID:  "blog-http",
+		ServiceName: "blog",
+		ECSEntityID: "d713389806398932cf6b1ff1eaa86a8b",
+	}
+
+	plan, err := BuildRelationExpirationPlan(endpoint, "related_to", now)
+	if err != nil {
+		t.Fatalf("BuildRelationExpirationPlan() error = %v", err)
+	}
+	if got, want := len(plan.Elements), 1; got != want {
+		t.Fatalf("len(plan.Elements) = %d, want %d", got, want)
+	}
+
+	relation := plan.Elements[0]
+	for key, want := range map[string]any{
+		"__src_domain__":         "sre",
+		"__src_entity_type__":    "sre.service_endpoint",
+		"__src_entity_id__":      "b0ccfdf2b903a8279c8a109aec71cba2",
+		"__dest_domain__":        "acs",
+		"__dest_entity_type__":   "acs.ecs.instance",
+		"__dest_entity_id__":     "d713389806398932cf6b1ff1eaa86a8b",
+		"__relation_type__":      "related_to",
+		"__method__":             "Expire",
+		"__last_observed_time__": now.Unix(),
+	} {
+		if got := relation[key]; got != want {
+			t.Errorf("relation %s = %#v, want %#v", key, got, want)
+		}
+	}
+	if _, found := relation["__keep_alive_seconds__"]; found {
+		t.Error("expiry relation must omit __keep_alive_seconds__")
+	}
+	if _, found := relation["__domain__"]; found {
+		t.Error("expiry plan must not contain an entity element")
+	}
+}

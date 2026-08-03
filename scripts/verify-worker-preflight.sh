@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${script_dir}/lib/verify-worker-preflight-lib.sh"
+
 # This script deliberately performs no systemctl enable/start/restart action.
 # It proves the customer-hosted worker prerequisites as the service account.
 
@@ -19,10 +22,7 @@ worker_bin="/opt/sre-rca/bin/sre-worker"
 evidence_bin="/opt/sre-rca/bin/sre-evidence"
 claude_bin="/usr/bin/claude"
 for executable in "${worker_bin}" "${evidence_bin}" "${claude_bin}"; do
-  if [[ ! -x "${executable}" ]] || [[ "$(stat -c '%a' "${executable}")" != "755" ]]; then
-    echo "required executable must exist with fixed mode 0755" >&2
-    exit 1
-  fi
+  require_fixed_executable "${executable}"
 done
 
 if ! id -u sre-rca >/dev/null 2>&1; then

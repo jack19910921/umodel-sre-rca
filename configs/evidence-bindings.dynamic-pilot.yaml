@@ -15,15 +15,7 @@ bindings:
     selector_mapping:
       endpoint_id: endpoint_id
 
-  - id: endpoint_availability
-    evidence_class: metrics
-    target: sre.service_endpoint
-    provider: aliyun.synthetic_probe
-    query_template: availability_window_v1
-    selector_mapping:
-      probe_task_id: probe_task_id
-
-  - id: ecs_normal_state
+  - id: ecs_cpu_window
     evidence_class: metrics
     target: acs.ecs.instance
     provider: aliyun.cloudmonitor
@@ -41,23 +33,3 @@ bindings:
       endpoint_id: endpoint_id
       instance_id: instance_id
     console_link_template: https://sls.console.aliyun.com/lognext/project/${sls_project}/logsearch/${sls_logstore}
-
-  - id: nginx_error_log
-    evidence_class: logs
-    target: sre.service_endpoint
-    provider: aliyun.sls
-    query_template: nginx_error_by_window_v1
-    selector_mapping:
-      endpoint_id: endpoint_id
-      instance_id: instance_id
-    console_link_template: https://sls.console.aliyun.com/lognext/project/${sls_project}/logsearch/${sls_logstore}
-
-  - id: security_group_change
-    evidence_class: changes
-    target: acs.ecs.securitygroup
-    provider: aliyun.actiontrail
-    query_template: security_group_change_window_v1
-    selector_mapping:
-      account_id: account_id
-      region_id: region_id
-      security_group_id: security_group_id

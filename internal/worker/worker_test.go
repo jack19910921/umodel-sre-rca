@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jack/umodel-sre-rca/internal/cc"
 	"github.com/jack/umodel-sre-rca/internal/domain"
 	"github.com/jack/umodel-sre-rca/internal/store"
 )
@@ -42,7 +43,19 @@ func (fakeEvidence) Changes(context.Context, string) ([]domain.Evidence, error) 
 
 type fakeRunner struct{ result domain.RCAResult }
 
-func (f fakeRunner) Run(context.Context, string) (domain.RCAResult, error) { return f.result, nil }
+func (f fakeRunner) Run(context.Context, string, []cc.EvidenceCollection) (domain.RCAResult, error) {
+	return f.result, nil
+}
+
+type recordingRunner struct {
+	result      domain.RCAResult
+	collections []cc.EvidenceCollection
+}
+
+func (r *recordingRunner) Run(_ context.Context, _ string, collections []cc.EvidenceCollection) (domain.RCAResult, error) {
+	r.collections = collections
+	return r.result, nil
+}
 
 func newWorker(t *testing.T, result domain.RCAResult) (*Worker, *store.SQLiteRepository, *fakeCards) {
 	t.Helper()
@@ -77,6 +90,30 @@ func TestWorkerCompletesAndUpdatesOneCard(t *testing.T) {
 	got, err := repo.IncidentByID(context.Background(), incident.ID)
 	if err != nil || got.State != domain.IncidentCompleted || cards.updates != 2 {
 		t.Fatalf("incident=%#v updates=%d err=%v", got, cards.updates, err)
+	}
+}
+
+func TestWorkerPassesTheStoredEvidenceSetToTheRunner(t *testing.T) {
+	repo, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = repo.Close() })
+	runner := &recordingRunner{result: validResult()}
+	w := New(repo, &fakeCards{}, fakeEvidence{}, runner, "worker-a", func() time.Time { return time.Unix(200, 0) })
+	_ = enqueueFixtureIncident(t, repo)
+
+	if err := w.RunOne(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(runner.collections) != 4 {
+		t.Fatalf("collection count=%d want=4", len(runner.collections))
+	}
+	if got := runner.collections[0].Evidence[0].ID; got != "ev-context" {
+		t.Fatalf("context evidence id=%q want=ev-context", got)
+	}
+	if got := runner.collections[3].Evidence[0].ID; got != "ev-change" {
+		t.Fatalf("change evidence id=%q want=ev-change", got)
 	}
 }
 
