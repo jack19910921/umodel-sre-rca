@@ -15,14 +15,16 @@ import (
 type fakeCards struct {
 	creates int
 	updates int
+	results []domain.RCAResult
 }
 
 func (f *fakeCards) CreateIncidentCard(context.Context, domain.Incident) (string, error) {
 	f.creates++
 	return "om-demo", nil
 }
-func (f *fakeCards) UpdateIncidentCard(context.Context, string, domain.Incident, domain.RCAResult) error {
+func (f *fakeCards) UpdateIncidentCard(_ context.Context, _ string, _ domain.Incident, result domain.RCAResult) error {
 	f.updates++
+	f.results = append(f.results, result)
 	return nil
 }
 
@@ -81,7 +83,7 @@ func enqueueFixtureIncident(t *testing.T, repo *store.SQLiteRepository) domain.I
 }
 
 func TestWorkerCompletesAndUpdatesOneCard(t *testing.T) {
-	result := domain.RCAResult{Summary: "security group removed TCP/80", RootCause: "security group", Confidence: 0.9, EvidenceIDs: []string{"ev-context", "ev-change"}}
+	result := domain.RCAResult{Summary: "安全组已移除 TCP/80", RootCause: "安全组规则被撤销", Confidence: 0.9, EvidenceIDs: []string{"ev-context", "ev-change"}, NextActions: []string{"恢复 TCP/80"}}
 	w, repo, cards := newWorker(t, result)
 	incident := enqueueFixtureIncident(t, repo)
 	if err := w.RunOne(context.Background()); err != nil {
@@ -90,6 +92,25 @@ func TestWorkerCompletesAndUpdatesOneCard(t *testing.T) {
 	got, err := repo.IncidentByID(context.Background(), incident.ID)
 	if err != nil || got.State != domain.IncidentCompleted || cards.updates != 2 {
 		t.Fatalf("incident=%#v updates=%d err=%v", got, cards.updates, err)
+	}
+}
+
+func TestWorkerUsesChineseFailureMessageAfterRetriesExhausted(t *testing.T) {
+	w, repo, cards := newWorker(t, domain.RCAResult{Summary: "缺少根因", EvidenceIDs: []string{"ev-context"}})
+	_ = enqueueFixtureIncident(t, repo)
+	primeJobAttempt(t, repo)
+	if err := w.RunOne(context.Background()); err == nil {
+		t.Fatal("RunOne() error = nil")
+	}
+	if len(cards.results) == 0 {
+		t.Fatal("card was not updated")
+	}
+	last := cards.results[len(cards.results)-1]
+	if last.Summary != "RCA 未能完成；请检查网关日志后重试。" {
+		t.Fatalf("failure summary=%q", last.Summary)
+	}
+	if len(last.NextActions) != 1 || last.NextActions[0] != "检查网关错误并重试该事件。" {
+		t.Fatalf("failure actions=%v", last.NextActions)
 	}
 }
 
@@ -118,7 +139,7 @@ func TestWorkerPassesTheStoredEvidenceSetToTheRunner(t *testing.T) {
 }
 
 func TestWorkerRetriesPendingAuditAfter120Seconds(t *testing.T) {
-	result := domain.RCAResult{Summary: "audit event pending", RootCause: "security group", Confidence: 0.5, EvidenceIDs: []string{"ev-context"}, PendingAudit: true}
+	result := domain.RCAResult{Summary: "等待审计事件", RootCause: "安全组变更尚未确认", Confidence: 0.5, EvidenceIDs: []string{"ev-context"}, NextActions: []string{"等待审计事件"}, PendingAudit: true}
 	w, repo, _ := newWorker(t, result)
 	incident := enqueueFixtureIncident(t, repo)
 	if err := w.RunOne(context.Background()); err != nil {
@@ -161,7 +182,7 @@ func TestWorkerAuditTransitionSurvivesCrashAfterCurrentJobCompletion(t *testing.
 	t.Cleanup(func() { _ = base.Close() })
 	incident := enqueueFixtureIncident(t, base)
 	repo := crashAfterCompleteJobRepo{SQLiteRepository: base}
-	result := domain.RCAResult{Summary: "audit event pending", RootCause: "security group", Confidence: 0.5, EvidenceIDs: []string{"ev-context"}, PendingAudit: true}
+	result := domain.RCAResult{Summary: "等待审计事件", RootCause: "安全组变更尚未确认", Confidence: 0.5, EvidenceIDs: []string{"ev-context"}, NextActions: []string{"等待审计事件"}, PendingAudit: true}
 	w := New(repo, &fakeCards{}, fakeEvidence{}, fakeRunner{result: result}, "worker-a", func() time.Time { return time.Unix(200, 0) })
 	_ = runWorkerSafely(w)
 	got, err := base.IncidentByID(context.Background(), incident.ID)
@@ -217,7 +238,7 @@ func TestWorkerClaimFenceSuppressesStaleCardUpdates(t *testing.T) {
 	}{
 		{name: "investigating", result: validResult(), reclaimOn: 1},
 		{name: "completed", result: validResult(), reclaimOn: 2, wantEvents: []string{domain.IncidentInvestigating}},
-		{name: "pending audit", result: domain.RCAResult{Summary: "audit pending", RootCause: "security group", Confidence: 0.5, EvidenceIDs: []string{"ev-context"}, PendingAudit: true}, reclaimOn: 2, wantEvents: []string{domain.IncidentInvestigating}},
+		{name: "pending audit", result: domain.RCAResult{Summary: "等待审计事件", RootCause: "安全组变更尚未确认", Confidence: 0.5, EvidenceIDs: []string{"ev-context"}, NextActions: []string{"等待审计事件"}, PendingAudit: true}, reclaimOn: 2, wantEvents: []string{domain.IncidentInvestigating}},
 		{name: "failed", result: domain.RCAResult{Summary: "invalid", EvidenceIDs: []string{"unknown"}}, reclaimOn: 2, primeFailed: true, wantEvents: []string{domain.IncidentInvestigating}},
 	}
 	for _, tt := range tests {
@@ -584,7 +605,7 @@ func (c *recordingCards) eventsSnapshot() []string {
 }
 
 func validResult() domain.RCAResult {
-	return domain.RCAResult{Summary: "security group removed TCP/80", RootCause: "security group", Confidence: 0.9, EvidenceIDs: []string{"ev-context", "ev-change"}}
+	return domain.RCAResult{Summary: "安全组已移除 TCP/80", RootCause: "安全组规则被撤销", Confidence: 0.9, EvidenceIDs: []string{"ev-context", "ev-change"}, NextActions: []string{"恢复 TCP/80"}}
 }
 
 func mustRecover(t *testing.T, repo *store.SQLiteRepository, incident domain.Incident) {

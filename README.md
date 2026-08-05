@@ -39,6 +39,10 @@ Incident/Job 状态，读取客户账号内的 UModel、CloudMonitor 和 SLS 证
 | `internal/store` | SQLite Incident、Job、租约、重试、证据记录。 |
 | `internal/worker` | Job 状态机、取证顺序、Claude 结果/证据 ID 校验。 |
 
+`sre-gateway` 不运行模型、取证或轮询 Worker；仅在收到 `RECOVERED` 且配置了飞书
+App ID/Secret 时，更新已存在的同一张飞书卡片。创建卡片和所有 RCA 处理仍由
+`sre-worker` 完成。
+
 ## 推荐阅读顺序
 
 1. [MVP 架构](docs/architecture/customer-hosted-fde-sre-rca-mvp.md)
@@ -47,6 +51,9 @@ Incident/Job 状态，读取客户账号内的 UModel、CloudMonitor 和 SLS 证
 4. [MVP 演练 Runbook](docs/runbooks/mvp-demo.md)
 5. [Evidence 拓扑上下文 Runbook](docs/runbooks/evidence-topology-context.md)
 6. [UModel 同步 Runbook](docs/runbooks/sre-sync.md)
+
+`docs/superpowers/specs/` 与 `docs/superpowers/plans/` 是历史设计和实施记录，不是
+当前运行手册；以 README、上面的 Runbook 和团队上手文档为准。
 
 ## 本地验证与 Linux 构建
 

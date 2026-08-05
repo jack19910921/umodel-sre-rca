@@ -8,6 +8,7 @@ import (
 
 	"github.com/jack/umodel-sre-rca/internal/cc"
 	"github.com/jack/umodel-sre-rca/internal/domain"
+	"github.com/jack/umodel-sre-rca/internal/messages"
 	"github.com/jack/umodel-sre-rca/internal/store"
 )
 
@@ -94,7 +95,7 @@ func (w *Worker) RunOne(ctx context.Context) error {
 			return w.persistenceFailure(ctx, job, err)
 		}
 		if incident.State == domain.IncidentRecovered {
-			return w.cards.UpdateIncidentCard(ctx, incident.FeishuMessageID, incident, domain.RCAResult{Summary: "CloudMonitor alert recovered."})
+			return w.cards.UpdateIncidentCard(ctx, incident.FeishuMessageID, incident, domain.RCAResult{Summary: messages.RecoverySummary})
 		}
 	}
 	if err := w.repo.MarkInvestigatingForClaim(ctx, job, now); err != nil {
@@ -191,7 +192,7 @@ func (w *Worker) collectEvidence(ctx context.Context, incidentID string) ([]cc.E
 func (w *Worker) fail(ctx context.Context, incident domain.Incident, job domain.Job, cause error) error {
 	if job.Attempt >= 3 && incident.FeishuMessageID != "" {
 		incident.State = domain.IncidentFailed
-		if err := w.updateCard(ctx, job, incident, domain.RCAResult{Summary: "RCA could not complete; review gateway logs and retry.", NextActions: []string{"Review the gateway error and retry the incident"}}); err != nil {
+		if err := w.updateCard(ctx, job, incident, domain.RCAResult{Summary: messages.FailureSummary, NextActions: []string{messages.FailureAction}}); err != nil {
 			if isInactive(err) {
 				return nil
 			}
@@ -229,7 +230,7 @@ func (w *Worker) finishRecoveredCardCreate(ctx context.Context, incidentID, mess
 	if err != nil {
 		return err
 	}
-	return w.cards.UpdateIncidentCard(ctx, incident.FeishuMessageID, incident, domain.RCAResult{Summary: "CloudMonitor alert recovered."})
+	return w.cards.UpdateIncidentCard(ctx, incident.FeishuMessageID, incident, domain.RCAResult{Summary: messages.RecoverySummary})
 }
 
 func (w *Worker) persistenceFailure(ctx context.Context, job domain.Job, cause error) error {

@@ -1,5 +1,8 @@
 # UModel SRE RCA MVP 设计
 
+> **归档记录：** 本文反映 2026-07-20 的设计输入，不是当前部署或运行依据。请以仓库
+> README、`docs/development/team-onboarding.md` 和 `docs/runbooks/` 为准。
+
 **日期：** 2026-07-20
 **状态：** 已确认设计，待实施规划
 **范围：** 独立 MVP；不复用或修改 ARA

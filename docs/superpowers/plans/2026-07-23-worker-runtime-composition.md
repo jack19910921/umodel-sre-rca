@@ -1,5 +1,8 @@
 # Customer-hosted RCA Worker Runtime Implementation Plan
 
+> **归档记录：** 本文反映 2026-07-23 的实施计划，不是当前部署或运行依据。请以仓库
+> README、`docs/development/team-onboarding.md` 和 `docs/runbooks/` 为准。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Safely consume persisted CloudMonitor incidents on the customer ECS, collect only allowlisted evidence, run the bounded local Claude Code/DeepSeek RCA Skill, and keep the same Feishu card correct through failure, retry, and recovery.

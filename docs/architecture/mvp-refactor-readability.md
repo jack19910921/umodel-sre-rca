@@ -36,7 +36,8 @@ sre-sync config --> modelsync.Plan --> classified Log Protocol batches --> SLS
   SLS 批次；`CMSWriter` 只负责按批次调用写客户端。
 
 这保持依赖单向：HTTP 和 Worker 不依赖云 SDK 细节；Provider 不依赖 HTTP、飞书或
-SQLite SQL；UModel 写入不复用只读取证 Provider。
+SQLite SQL；UModel 写入不复用只读取证 Provider。Gateway 仅在恢复时用飞书客户端
+更新已有卡片，不创建卡片、不调用模型，也不读取云证据。
 
 ## 关键接口、数据流和状态机
 

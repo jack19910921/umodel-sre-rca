@@ -1,5 +1,8 @@
 # MVP Readability Refactor Implementation Plan
 
+> **归档记录：** 本文反映 2026-08-03 的重构计划，不是当前部署或运行依据。请以仓库
+> README、`docs/development/team-onboarding.md` 和 `docs/runbooks/` 为准。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Simplify the customer-hosted MVP's Provider and UModel write boundaries without changing its verified runtime contracts.

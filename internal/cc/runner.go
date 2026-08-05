@@ -303,7 +303,7 @@ func ParseResult(raw []byte) (domain.RCAResult, error) {
 			Result string `json:"result"`
 		}
 		if err := json.Unmarshal(raw, &envelope); err == nil && envelope.Result != "" {
-			if err := json.Unmarshal(stripJSONCodeFence(envelope.Result), &result); err != nil {
+			if err := json.Unmarshal([]byte(envelope.Result), &result); err != nil {
 				return domain.RCAResult{}, fmt.Errorf("decode RCA result envelope: %w", err)
 			}
 		}
@@ -314,21 +314,17 @@ func ParseResult(raw []byte) (domain.RCAResult, error) {
 	return result, nil
 }
 
-func stripJSONCodeFence(value string) []byte {
-	trimmed := strings.TrimSpace(value)
-	if !strings.HasPrefix(trimmed, "```") || !strings.HasSuffix(trimmed, "```") {
-		return []byte(trimmed)
-	}
-	newline := strings.IndexByte(trimmed, '\n')
-	if newline < 0 {
-		return []byte(trimmed)
-	}
-	return []byte(strings.TrimSpace(trimmed[newline+1 : len(trimmed)-3]))
-}
-
 func ValidateResult(result domain.RCAResult, knownEvidence map[string]bool) error {
 	if strings.TrimSpace(result.Summary) == "" || strings.TrimSpace(result.RootCause) == "" {
 		return fmt.Errorf("RCA result summary and root_cause are required")
+	}
+	if !containsHan(result.Summary) || !containsHan(result.RootCause) {
+		return fmt.Errorf("RCA result summary and root_cause must contain Chinese")
+	}
+	for _, action := range result.NextActions {
+		if strings.TrimSpace(action) == "" || !containsHan(action) {
+			return fmt.Errorf("RCA result next_actions must contain Chinese")
+		}
 	}
 	if result.Confidence < 0 || result.Confidence > 1 {
 		return fmt.Errorf("RCA confidence must be within [0,1]")
@@ -345,4 +341,13 @@ func ValidateResult(result domain.RCAResult, knownEvidence map[string]bool) erro
 		}
 	}
 	return nil
+}
+
+func containsHan(value string) bool {
+	for _, char := range value {
+		if char >= '\u4e00' && char <= '\u9fff' {
+			return true
+		}
+	}
+	return false
 }

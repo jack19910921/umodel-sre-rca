@@ -10,6 +10,7 @@ import (
 
 	"github.com/jack/umodel-sre-rca/internal/domain"
 	"github.com/jack/umodel-sre-rca/internal/inbound"
+	"github.com/jack/umodel-sre-rca/internal/messages"
 )
 
 const maxCallbackBytes = 256 * 1024
@@ -102,7 +103,7 @@ func registerCloudMonitorIngress(mux *http.ServeMux, callbackToken string, repo 
 				}
 			}
 			if incident.FeishuMessageID != "" && notifier != nil {
-				if err := notifier.UpdateIncidentCard(r.Context(), incident.FeishuMessageID, incident, domain.RCAResult{Summary: "CloudMonitor alert recovered."}); err != nil {
+				if err := notifier.UpdateIncidentCard(r.Context(), incident.FeishuMessageID, incident, domain.RCAResult{Summary: messages.RecoverySummary}); err != nil {
 					writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "notify recovery"})
 					return
 				}

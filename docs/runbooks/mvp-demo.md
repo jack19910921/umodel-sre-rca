@@ -107,8 +107,10 @@ rule immediately after the alert test.
 
 CloudMonitor normal ingress is already live in the customer account: an
 `OCCURRED` callback creates an idempotent incident/job and `RECOVERED` closes
-the matching incident. The Gateway remains ingress-only. It must not launch
-Claude Code, Feishu, or a polling Worker.
+the matching incident. The Gateway remains an ingress process: it must not
+launch Claude Code or a polling Worker. When Feishu App ID/Secret are configured,
+it may only update the already-existing card for `RECOVERED`; it never creates
+cards or performs RCA work.
 
 Build the separate `sre-worker` binary and install it alongside the Gateway
 and `sre-evidence`, but do **not** enable its systemd service until all of the
@@ -119,10 +121,12 @@ following are true:
 2. The ECS RAM role can read the required UModel, CloudMonitor, SLS, and
    ActionTrail evidence sources.
 3. Logtail has delivered Nginx logs to the selected SLS Logstore.
-4. Copy the ingress-only template into the intended `/etc/sre-rca/sre.yaml`
+4. Before exposing the normal callback endpoint, put the Feishu App ID/Secret
+   in `/etc/sre-rca/sre.env`; Gateway uses them only for same-card recovery
+   updates. Copy the ingress template into the intended `/etc/sre-rca/sre.yaml`
    worker runtime config, set `worker.enabled: true`, and fill every reviewed
-   binding plus Feishu and cloud credential placeholder. This configuration
-   edit does not start a process.
+   binding plus Feishu and cloud credential placeholder. This configuration edit
+   does not start a process.
 5. Feishu app credentials and chat ID are present only in `/etc/sre-rca/sre.env`.
 6. `scripts/verify-worker-preflight.sh` succeeds as root with
    `SRE_RCA_PREFLIGHT_INCIDENT_ID` set. The script checks the fixed Claude and

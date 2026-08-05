@@ -5,8 +5,20 @@ This additive upgrade enables the normal, customer-hosted endpoint
 Webhook contract, creates an idempotent incident job for `OCCURRED`, and marks
 the matching active incident recovered for `RECOVERED`.
 
-It does **not** start the RCA worker or invoke Claude Code. Do not change the
-CloudMonitor target URL until the local endpoint has been verified.
+It does **not** start the RCA worker or invoke Claude Code. Before exposing the
+normal endpoint, put `FEISHU_APP_ID` and `FEISHU_APP_SECRET` in
+`/etc/sre-rca/sre.env` and add the following to `/etc/sre-rca/sre.yaml` so
+`RECOVERED` can update an existing card:
+
+```yaml
+feishu:
+  app_id: ${FEISHU_APP_ID}
+  app_secret: ${FEISHU_APP_SECRET}
+  chat_id: ${FEISHU_CHAT_ID} # required when the Worker is enabled later
+```
+
+Do not change the CloudMonitor target URL until the local endpoint has been
+verified.
 
 ## Upgrade the binary
 

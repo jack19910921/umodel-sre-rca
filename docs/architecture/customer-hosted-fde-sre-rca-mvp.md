@@ -89,7 +89,7 @@ CloudMonitor ---------------------> sre-gateway (127.0.0.1:8080)
 
 | 组件 | 职责 | 不负责什么 |
 | --- | --- | --- |
-| `sre-gateway` | 校验 Callback、规范化、幂等 Incident、入队、处理恢复 | 不执行模型与云证据查询 |
+| `sre-gateway` | 校验 Callback、规范化、幂等 Incident、入队、处理恢复；在配置飞书凭据时更新已有恢复卡片 | 不执行模型与云证据查询，也不创建卡片 |
 | SQLite State Store | Incident、Job、证据记录、飞书 message ID、重试租约 | 不保存遥测原文 |
 | `sre-worker` | 领取 Job、收集证据、调用 Claude、校验结果、更新卡片 | 不接收公网请求 |
 | `sre-evidence` / Provider | 对固定 Binding 执行只读云查询，生成统一 Evidence | 不接受 Agent 传入的任意查询 |
@@ -289,7 +289,8 @@ sha256sum sre-worker-linux-amd64.tar.gz
 
 客户 ECS 上的发布顺序固定为：校验 SHA256 -> 解压到带日期的 release 目录 -> 备份当前二进制 -> 停止单个服务 -> 安装到临时文件 -> `cmp` -> 原子 `mv` -> 启动单个服务 -> 检查 gateway/worker 状态与 journal。
 
-发布包放在客户服务器 `/root/` 仅是传输约定；源码仓库不提交 `.tar.gz`。可复建包使用 `dist/` 或外部制品仓库。
+发布包放在客户服务器 `/root/` 仅是传输约定；源码仓库不提交 `.tar.gz`。可复建包输出到
+`/tmp` 或外部制品仓库，不能依赖仓库内的 `dist/` 目录。
 
 ## 10. 分阶段落地 Runbook
 

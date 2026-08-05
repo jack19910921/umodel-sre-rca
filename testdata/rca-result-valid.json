@@ -1,8 +1,8 @@
 {
-  "summary": "TCP/80 was removed from the security group",
+  "summary": "安全组已移除 TCP/80 入站规则",
   "confidence": 0.93,
-  "root_cause": "security group rule revoked",
+  "root_cause": "安全组入站规则被撤销",
   "evidence_ids": ["ev-probe", "ev-change"],
-  "next_actions": ["restore TCP/80"],
+  "next_actions": ["恢复 TCP/80 入站规则"],
   "pending_audit": false
 }

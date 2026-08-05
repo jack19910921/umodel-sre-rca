@@ -116,7 +116,7 @@ func TestRunnerKeepsStderrOutOfValidJSON(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Summary != "valid RCA" {
+	if result.Summary != "有效 RCA" {
 		t.Fatalf("result=%#v", result)
 	}
 }
@@ -126,7 +126,7 @@ func TestRunnerUsesCallerEvidenceWithoutRequerying(t *testing.T) {
 	runner := Runner{
 		commandFactory: func(ctx context.Context, name string, _ ...string) *exec.Cmd {
 			commands = append(commands, name)
-			return exec.CommandContext(ctx, "/bin/echo", `{"summary":"valid RCA","confidence":0.9,"root_cause":"test","evidence_ids":["ev-context"],"next_actions":["review"]}`)
+			return exec.CommandContext(ctx, "/bin/echo", `{"summary":"有效 RCA","confidence":0.9,"root_cause":"测试根因","evidence_ids":["ev-context"],"next_actions":["检查配置"]}`)
 		},
 		workingDir: t.TempDir(),
 	}
@@ -137,7 +137,7 @@ func TestRunnerUsesCallerEvidenceWithoutRequerying(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Summary != "valid RCA" {
+	if result.Summary != "有效 RCA" {
 		t.Fatalf("result=%#v", result)
 	}
 	if got, want := commands, []string{defaultClaudeBinary}; !equalStrings(got, want) {
@@ -197,8 +197,8 @@ func TestParseResultRejectsMissingEvidence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ParseResult(raw); err == nil {
-		t.Fatal("wanted validation error")
+	if _, err := ParseResult(raw); err == nil || !strings.Contains(err.Error(), "evidence") {
+		t.Fatalf("err=%v, want missing evidence validation", err)
 	}
 }
 
@@ -213,15 +213,24 @@ func TestParseResultAcceptsValidEvidence(t *testing.T) {
 	}
 }
 
-func TestParseResultAcceptsClaudeJSONEnvelopeWithFencedResult(t *testing.T) {
+func TestParseResultRejectsClaudeJSONEnvelopeWithFencedResult(t *testing.T) {
 	raw := []byte("{\"result\":\"```json\\n{\\\"summary\\\":\\\"valid RCA\\\",\\\"confidence\\\":0.9,\\\"root_cause\\\":\\\"test\\\",\\\"evidence_ids\\\":[\\\"ev-context\\\"],\\\"next_actions\\\":[\\\"review\\\"]}\\n```\"}")
 
-	got, err := ParseResult(raw)
-	if err != nil {
-		t.Fatal(err)
+	if _, err := ParseResult(raw); err == nil {
+		t.Fatal("ParseResult() error = nil, want fenced JSON rejection")
 	}
-	if got.Summary != "valid RCA" || got.RootCause != "test" {
-		t.Fatalf("result=%#v", got)
+}
+
+func TestValidateResultRejectsEnglishCustomerFacingFields(t *testing.T) {
+	err := ValidateResult(domain.RCAResult{
+		Summary:     "security group removed TCP/80",
+		RootCause:   "security group rule revoked",
+		Confidence:  0.9,
+		EvidenceIDs: []string{"ev-context"},
+		NextActions: []string{"restore TCP/80"},
+	}, nil)
+	if err == nil {
+		t.Fatal("ValidateResult() error = nil, want non-Chinese customer-facing fields rejection")
 	}
 }
 
@@ -275,7 +284,7 @@ func TestRunnerHelperProcess(t *testing.T) {
 	switch mode {
 	case "valid-with-stderr":
 		_, _ = os.Stderr.WriteString("benign diagnostics\n")
-		_, _ = os.Stdout.WriteString(`{"summary":"valid RCA","confidence":0.9,"root_cause":"test","evidence_ids":["ev-context"],"next_actions":["review"]}`)
+		_, _ = os.Stdout.WriteString(`{"summary":"有效 RCA","confidence":0.9,"root_cause":"测试根因","evidence_ids":["ev-context"],"next_actions":["检查配置"]}`)
 	case "failing":
 		_, _ = os.Stdout.WriteString("SECRET_STDOUT")
 		_, _ = os.Stderr.WriteString("SECRET_STDERR")

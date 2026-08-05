@@ -42,13 +42,17 @@ Worker 在进程内组合 Provider，因此二进制、Evidence Binding 或运�
 加载。获得客户批准并完成验证后，才按变更流程重启 Worker；本仓库的测试与构建都
 不授权部署。
 
+Gateway 不启动 Claude、Provider 或轮询 Worker。它只在 `RECOVERED` 回调且配置了
+飞书 App ID/Secret 时，更新已经存在的同一张卡片；因此正常回调上线前必须确认
+Gateway 的 `sre.env` 同时提供这两个变量。只部署 `/capture` 的阶段可以不配置它们。
+
 ## 发布前检查
 
 1. 运行完整测试、预检测试、`git diff --check` 和四个 Linux 构建。
 2. 审查 staged diff、配置、文档和测试样例：不得有 Token、Secret、真实 Callback
    fixture、原始日志、真实 IP、客户账号、二进制、`.tar.gz` 或 SQLite 状态库。
-3. 确认 Gateway 仍只做 HTTP 入口；Worker 仍通过 Job 租约执行；CLI 参数、YAML key、
-   Incident/Evidence Binding 与飞书卡片字段均保持兼容。
+3. 确认 Gateway 仍只做 HTTP 入口和恢复卡片更新；Worker 仍通过 Job 租约执行；CLI
+   参数、YAML key、Incident/Evidence Binding 与飞书卡片字段均保持兼容。
 4. 在客户变更记录中列出验证命令、批准人、可回滚版本和是否需要重启 Worker。没有
    已验证包和批准时，**不得部署**。
 

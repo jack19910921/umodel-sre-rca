@@ -1,7 +1,7 @@
 {
-  "summary": "unsubstantiated",
+  "summary": "证据不足",
   "confidence": 0.93,
-  "root_cause": "unknown",
+  "root_cause": "根因未知",
   "evidence_ids": [],
   "next_actions": []
 }
